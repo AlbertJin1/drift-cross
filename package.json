@@ -1,0 +1,46 @@
+{
+  "name": "drift",
+  "version": "1.0.0",
+  "description": "Drift - a small, fast, open-source cross-platform browser with spaces, vertical tabs and a command palette.",
+  "main": "main.js",
+  "license": "MIT",
+  "author": "Drift contributors",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "latest"
+  },
+  "build": {
+    "appId": "org.drift.browser",
+    "productName": "Drift",
+    "files": [
+      "main.js",
+      "preload.js",
+      "ui/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "Drift.exe"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Network"
+    }
+  }
+}

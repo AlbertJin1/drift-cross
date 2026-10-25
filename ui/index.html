@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Drift</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data:; style-src 'self'; script-src 'self'">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside id="side">
+    <div class="spaces" id="spaces"></div>
+    <div class="tabs" id="tabs"></div>
+    <button id="newtab" class="newtab">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      <span>New tab</span><kbd id="kNew"></kbd>
+    </button>
+  </aside>
+
+  <header id="top">
+    <button id="back" class="icon" title="Back"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
+    <button id="forward" class="icon" title="Forward"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg></button>
+    <button id="reload" class="icon" title="Reload"><svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg></button>
+
+    <form id="omni" class="omni" autocomplete="off">
+      <svg class="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      <input id="addr" spellcheck="false" placeholder="Search or enter address">
+      <button type="button" id="star" class="icon sm" title="Bookmark this page">
+        <svg viewBox="0 0 24 24"><polygon points="12 2 15.1 8.6 22 9.3 17 14.1 18.2 21 12 17.8 5.8 21 7 14.1 2 9.3 8.9 8.6 12 2"/></svg>
+      </button>
+    </form>
+
+    <button id="reader" class="icon" title="Reader mode"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></button>
+    <div class="chip" title="Trackers and ads blocked">
+      <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span id="blocked">0</span>
+    </div>
+    <button id="palette" class="icon" title="Command palette"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg></button>
+    <div id="bar"></div>
+  </header>
+  <script src="ui.js"></script>
+</body>
+</html>

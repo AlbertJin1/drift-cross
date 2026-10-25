@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>New tab</title>
+<style>
+  :root{color-scheme:dark light;--bg:#16161d;--text:#ecedf5;--muted:#9a9db3;--panel:#252532;--accent:#8b6cff;--hover:#2e2e3e;--border:#2d2d3c}
+  @media (prefers-color-scheme:light){:root{--bg:#f3f4f8;--text:#1b1b24;--muted:#6a6d82;--panel:#fff;--accent:#6c4cff;--hover:#e6e8f0;--border:#d6d9e4}}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;
+    background:radial-gradient(900px 480px at 50% -5%,color-mix(in srgb,var(--accent) 22%,transparent),transparent),var(--bg);
+    color:var(--text);font:16px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  h1{margin:0;font-size:64px;letter-spacing:-2px;background:linear-gradient(135deg,var(--accent),#38bdf8);-webkit-background-clip:text;color:transparent}
+  #clock{color:var(--muted);margin-top:-18px;font-size:15px}
+  form{width:min(620px,88vw)}
+  input{width:100%;height:54px;border-radius:27px;border:1px solid var(--border);background:var(--panel);color:var(--text);
+    font-size:17px;padding:0 24px;outline:0;box-shadow:0 8px 28px rgba(0,0,0,.18);transition:border-color .15s,box-shadow .15s}
+  input:focus{border-color:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 25%,transparent)}
+  .tiles{display:grid;grid-template-columns:repeat(5,92px);gap:16px}
+  a{display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:13px;
+    padding:14px 0;border-radius:16px;transition:background .15s,transform .15s,color .15s}
+  a:hover{background:var(--hover);color:var(--text);transform:translateY(-2px)}
+  a i{width:44px;height:44px;border-radius:14px;display:grid;place-items:center;font-style:normal;font-weight:700;font-size:18px;color:#fff;background:var(--accent)}
+  .hint{color:var(--muted);font-size:13px}
+  kbd{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:2px 7px;font:12px system-ui}
+</style>
+</head>
+<body>
+  <h1>Drift</h1>
+  <div id="clock"></div>
+  <form id="f"><input id="q" placeholder="Search the web or enter an address" autofocus autocomplete="off" spellcheck="false"></form>
+  <div class="tiles" id="tiles"></div>
+  <div class="hint">Press <kbd id="k"></kbd> for the command palette</div>
+<script>
+  const tiles = [['DuckDuckGo','https://duckduckgo.com','D','#de5833'],['Wikipedia','https://wikipedia.org','W','#636466'],
+    ['GitHub','https://github.com','G','#24292f'],['YouTube','https://youtube.com','Y','#e62117'],['Reddit','https://reddit.com','R','#ff4500']];
+  document.getElementById('tiles').innerHTML = tiles.map(t => `<a href="${t[1]}"><i style="background:${t[3]}">${t[2]}</i>${t[0]}</a>`).join('');
+  document.getElementById('k').textContent = navigator.platform.includes('Mac') ? '\u2318K' : 'Ctrl+K';
+  const tick = () => { document.getElementById('clock').textContent = new Date().toLocaleString([], {weekday:'long',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit'}); };
+  tick(); setInterval(tick, 15000);
+  document.getElementById('f').addEventListener('submit', e => {
+    e.preventDefault();
+    const t = document.getElementById('q').value.trim(); if (!t) return;
+    location.href = /^https?:\/\//i.test(t) ? t : (!/\s/.test(t) && t.includes('.')) ? 'https://' + t : 'https://duckduckgo.com/?q=' + encodeURIComponent(t);
+  });
+</script>
+</body>
+</html>
