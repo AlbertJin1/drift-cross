@@ -22,6 +22,11 @@ call npm install --no-audit --no-fund
 if errorlevel 1 goto :fail_end
 
 echo.
+echo Compiling Tailwind CSS...
+call npm run css:build
+if errorlevel 1 goto :fail_end
+
+echo.
 echo Cleaning previous dist output...
 if exist "dist" rmdir /s /q "dist"
 

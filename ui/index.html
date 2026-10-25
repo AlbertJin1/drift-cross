@@ -3,39 +3,130 @@
 <head>
 <meta charset="utf-8">
 <title>Drift</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data:; style-src 'self'; script-src 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: https: http:; style-src 'self'; script-src 'self'">
+<link rel="stylesheet" href="tailwind.generated.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <aside id="side">
-    <div class="spaces" id="spaces"></div>
-    <div class="tabs" id="tabs"></div>
-    <button id="newtab" class="newtab">
-      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-      <span>New tab</span><kbd id="kNew"></kbd>
-    </button>
-  </aside>
-
-  <header id="top">
-    <button id="back" class="icon" title="Back"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
-    <button id="forward" class="icon" title="Forward"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg></button>
-    <button id="reload" class="icon" title="Reload"><svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg></button>
-
-    <form id="omni" class="omni" autocomplete="off">
-      <svg class="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-      <input id="addr" spellcheck="false" placeholder="Search or enter address">
-      <button type="button" id="star" class="icon sm" title="Bookmark this page">
-        <svg viewBox="0 0 24 24"><polygon points="12 2 15.1 8.6 22 9.3 17 14.1 18.2 21 12 17.8 5.8 21 7 14.1 2 9.3 8.9 8.6 12 2"/></svg>
-      </button>
-    </form>
-
-    <button id="reader" class="icon" title="Reader mode"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></button>
-    <div class="chip" title="Trackers and ads blocked">
-      <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span id="blocked">0</span>
+  <div id="chrome" class="flex flex-col w-full h-full min-w-0">
+    <div id="windowbar" class="windowbar flex items-center w-full min-w-0" aria-label="Window title bar">
+      <div id="window-brand" class="window-brand flex items-center gap-2 shrink-0" aria-label="Drift browser">
+        <img src="assets/drift-mark.svg" alt="" width="19" height="19">
+        <span>Drift</span><span id="window-version" class="window-version">1.1</span>
+      </div>
+      <div id="window-drag-region" class="window-drag-region flex items-center min-w-0" aria-hidden="true">
+        <span id="window-title" class="window-title">A calmer way to browse</span>
+      </div>
+      <div id="window-actions" class="window-actions flex items-center shrink-0" aria-label="Window controls">
+        <button id="win-minimize" class="window-action" title="Minimize" aria-label="Minimize window"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+        <button id="win-maximize" class="window-action" title="Maximize" aria-label="Maximize window"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx=".5"/></svg></button>
+        <button id="win-close" class="window-action close-window" title="Close Drift" aria-label="Close window"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+      </div>
     </div>
-    <button id="palette" class="icon" title="Command palette"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg></button>
-    <div id="bar"></div>
-  </header>
+
+    <div id="tabbar" class="flex items-center w-full min-w-0 gap-2 px-3">
+      <div id="brand" class="flex items-center gap-2 shrink-0" aria-label="Drift browser">
+        <img src="assets/drift-mark.svg" alt="" width="24" height="24">
+        <span class="brand-name">Drift</span>
+      </div>
+      <div id="spaces" class="spaces flex items-center gap-1 shrink-0" aria-label="Spaces"></div>
+      <div id="tabs" class="tabs flex items-center gap-1 min-w-0" aria-label="Open tabs"></div>
+      <button id="newtab" class="icon new-tab-btn shrink-0" title="New tab (Ctrl+T)" aria-label="New tab">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <div id="tab-spacer" aria-hidden="true"></div>
+    </div>
+
+    <header id="toolbar" class="flex items-center gap-1 px-3 min-w-0">
+      <button id="back" class="icon" title="Back" aria-label="Back"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
+      <button id="forward" class="icon" title="Forward" aria-label="Forward"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg></button>
+      <button id="reload" class="icon" title="Reload" aria-label="Reload"><svg viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9a7 7 0 0 1 11.8-2L20 12M4 12l2.6 5A7 7 0 0 0 18.4 15"/></svg></button>
+
+      <form id="omni" class="omni flex items-center gap-2 min-w-0 flex-1" autocomplete="off" role="search">
+        <svg class="address-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+        <input id="addr" type="text" spellcheck="false" placeholder="Search or enter address" aria-label="Search or enter address">
+        <button type="button" id="star" class="icon sm" title="Bookmark this page (Ctrl+D)" aria-label="Bookmark this page">
+          <svg viewBox="0 0 24 24"><path d="m12 2.8 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3.1-5.8 3.1 1.1-6.5-4.7-4.6 6.5-.9L12 2.8z"/></svg>
+        </button>
+      </form>
+
+      <button id="bookmarks-toggle" class="icon" title="Bookmarks (Ctrl+Shift+B)" aria-label="Open bookmarks"><svg viewBox="0 0 24 24"><path d="M6 4.8A2.8 2.8 0 0 1 8.8 2H20v19l-7-4-7 4z"/><path d="M6 5v16"/></svg></button>
+      <button id="protection" class="protection-chip flex items-center gap-2" title="Ad and tracker protection" aria-label="Ad and tracker protection settings">
+        <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg><span id="blocked">0</span>
+      </button>
+      <button id="reader" class="icon" title="Reader mode (Ctrl+Shift+R)" aria-label="Reader mode"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8M8 11h8"/></svg></button>
+      <button id="palette" class="icon" title="Command palette (Ctrl+K)" aria-label="Open command palette"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m16.5 16.5 4.5 4.5M8 11h6M11 8v6"/></svg></button>
+      <button id="settings" class="icon" title="Settings" aria-label="Open settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1a1.7 1.7 0 0 1-2.4 2.4L17 17.4a1.7 1.7 0 0 0-2.9 1.2v.2a1.7 1.7 0 0 1-3.4 0v-.2a1.7 1.7 0 0 0-2.9-1.2l-.1.1a1.7 1.7 0 1 1-2.4-2.4l.1-.1a1.7 1.7 0 0 0-1.2-2.9H4a1.7 1.7 0 0 1 0-3.4h.2a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a1.7 1.7 0 1 1 2.4-2.4l.1.1a1.7 1.7 0 0 0 2.9-1.2V2a1.7 1.7 0 0 1 3.4 0v.2a1.7 1.7 0 0 0 2.9 1.2l.1-.1a1.7 1.7 0 1 1 2.4 2.4l-.1.1a1.7 1.7 0 0 0 1.2 2.9h.2a1.7 1.7 0 0 1 0 3.4h-.2a1.7 1.7 0 0 0-1.2 2.9z"/></svg></button>
+      <div id="bar" aria-hidden="true"></div>
+    </header>
+
+    <div id="bookmarksbar" class="flex items-center gap-2 min-w-0 px-3" aria-label="Bookmarks bar">
+      <div id="bookmark-items" class="bookmark-items flex items-center gap-1 min-w-0 flex-1"></div>
+      <button id="manage-bookmarks" class="bookmarks-manage shrink-0" title="Manage bookmarks">Manage</button>
+    </div>
+  </div>
+
+  <div id="bookmarksDialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="bookmarks-title">
+    <div class="dialog-panel bookmarks-panel">
+      <div class="dialog-heading flex items-center justify-between gap-3">
+        <div><h2 id="bookmarks-title">Your bookmarks</h2><p>Saved pages, available across sessions.</p></div>
+        <button class="icon dialog-close" data-close="bookmarksDialog" title="Close" aria-label="Close bookmarks"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <div id="bookmark-list" class="bookmark-list"></div>
+      <div class="dialog-footer flex items-center justify-between gap-3"><span id="bookmark-count" class="muted-note">0 bookmarks</span><button class="secondary-button" data-close="bookmarksDialog">Done</button></div>
+    </div>
+  </div>
+
+  <div id="adblockDialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="adblock-title">
+    <div class="dialog-panel protection-panel">
+      <div class="dialog-heading flex items-center justify-between gap-3">
+        <div><h2 id="adblock-title">Privacy protection</h2><p>Block known advertising and tracking hosts at the network layer.</p></div>
+        <button class="icon dialog-close" data-close="adblockDialog" title="Close" aria-label="Close protection settings"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <div class="protection-setting flex items-center justify-between gap-4">
+        <div><strong>Ads and trackers</strong><p>Applies to web requests in every space and tab.</p></div>
+        <label class="switch-wrap"><input id="adblock-enabled" type="checkbox"><span class="switch-track"></span><span class="sr-only">Enable ad and tracker blocking</span></label>
+      </div>
+      <div class="protection-stats flex items-center justify-between gap-4">
+        <div><span class="stat-value" id="blocked-total">0</span><span class="stat-label">requests blocked this session</span></div>
+        <button id="reset-blocked" class="secondary-button">Reset counter</button>
+      </div>
+      <div class="site-exception">
+        <div><strong id="exception-title">This website</strong><p id="exception-host">Open a website to manage its exception.</p></div>
+        <button id="site-exception-toggle" class="secondary-button" disabled>Pause on this site</button>
+      </div>
+      <div class="blocked-hosts-wrap"><h3>Most blocked hosts</h3><div id="blocked-hosts" class="blocked-hosts"></div></div>
+      <div class="dialog-footer flex items-center justify-end"><button class="secondary-button" data-close="adblockDialog">Done</button></div>
+    </div>
+  </div>
+
+  <div id="settingsDialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="dialog-panel settings-panel">
+      <div class="dialog-heading flex items-center justify-between gap-3">
+        <div><h2 id="settings-title">Drift settings</h2><p>Shape your browser experience. Changes are saved automatically.</p></div>
+        <button class="icon dialog-close" data-close="settingsDialog" title="Close" aria-label="Close settings"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <div class="settings-content">
+        <section class="settings-section">
+          <div class="settings-section-title"><span class="settings-section-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 13.5a7.5 7.5 0 0 0 0-3l2-1.5-2-3.5-2.3.9a7.5 7.5 0 0 0-2.5-1.4L14 2h-4l-.2 3a7.5 7.5 0 0 0-2.5 1.4L5 5.5 3 9l2 1.5a7.5 7.5 0 0 0 0 3L3 15l2 3.5 2.3-.9a7.5 7.5 0 0 0 2.5 1.4L10 22h4l.2-3a7.5 7.5 0 0 0 2.5-1.4l2.3.9 2-3.5z"/></svg></span><div><h3>Appearance</h3><p>Choose the look of Drift’s browser controls.</p></div></div>
+          <label class="setting-row" for="theme-setting"><span><strong>Theme</strong><small>Use a light or dark browser interface.</small></span><select id="theme-setting" class="setting-select"><option value="system">Follow system</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+          <label class="setting-row" for="show-bookmarks-setting"><span><strong>Show bookmarks bar</strong><small>Keep favourite sites under the address bar.</small></span><span class="switch-wrap"><input id="show-bookmarks-setting" type="checkbox"><span class="switch-track"></span></span></label>
+        </section>
+        <section class="settings-section">
+          <div class="settings-section-title"><span class="settings-section-icon"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5M7.5 10.5h6"/></svg></span><div><h3>Search and startup</h3><p>Configure the address bar and how Drift opens.</p></div></div>
+          <label class="setting-row" for="search-setting"><span><strong>Search engine</strong><small>Used when you enter search terms in the address bar.</small></span><select id="search-setting" class="setting-select"><option value="duckduckgo">DuckDuckGo</option><option value="google">Google</option><option value="bing">Bing</option><option value="brave">Brave Search</option></select></label>
+          <label class="setting-row" for="restore-session-setting"><span><strong>Restore previous session</strong><small>Reopen tabs and spaces from your last session.</small></span><span class="switch-wrap"><input id="restore-session-setting" type="checkbox"><span class="switch-track"></span></span></label>
+        </section>
+        <section class="settings-section about-section">
+          <div class="settings-section-title"><span class="about-logo"><img src="assets/drift-mark.svg" alt=""></span><div><h3>About Drift</h3><p>A focused browser built for fast, comfortable browsing.</p></div></div>
+          <div class="version-card"><div><strong id="app-version">Drift 1.1.0</strong><small id="runtime-version">Electron runtime</small><small id="chromium-version">Chromium engine</small></div><span class="version-status">Installed build</span></div>
+        </section>
+      </div>
+      <div class="dialog-footer flex items-center justify-between gap-3"><span class="muted-note">Your settings are stored on this device.</span><button class="secondary-button" data-close="settingsDialog">Done</button></div>
+    </div>
+  </div>
+
   <script src="ui.js"></script>
 </body>
 </html>

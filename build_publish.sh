@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 command -v node >/dev/null || { echo "ERROR: install Node.js LTS from https://nodejs.org"; exit 1; }
 npm install --no-audit --no-fund
+npm run css:build
 rm -rf dist
 case "$(uname -s)" in
   Darwin) npx electron-builder --mac ;;

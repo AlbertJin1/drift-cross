@@ -1,17 +1,20 @@
 {
   "name": "drift",
-  "version": "1.0.0",
-  "description": "Drift - a small, fast, open-source cross-platform browser with spaces, vertical tabs and a command palette.",
+  "version": "1.1.0",
+  "description": "Drift \u2014 a fast, cross-platform browser with a custom Windows titlebar, live address bar, tabs, persistent bookmarks, privacy protection, spaces, and configurable settings.",
   "main": "main.js",
   "license": "MIT",
   "author": "Drift contributors",
   "scripts": {
+    "css:build": "tailwindcss -c tailwind.config.cjs -i ./ui/tailwind.css -o ./ui/tailwind.generated.css --minify",
     "start": "electron .",
+    "predist": "npm run css:build",
     "dist": "electron-builder"
   },
   "devDependencies": {
     "electron": "^45.0.0",
-    "electron-builder": "latest"
+    "electron-builder": "latest",
+    "tailwindcss": "^3.4.17"
   },
   "build": {
     "appId": "org.drift.browser",
@@ -20,12 +23,15 @@
       "main.js",
       "preload.js",
       "ui/**/*",
+      "build/**/*",
+      "tailwind.config.cjs",
       "package.json"
     ],
     "win": {
       "target": [
         "portable"
-      ]
+      ],
+      "icon": "build/icon.ico"
     },
     "portable": {
       "artifactName": "Drift.exe"
@@ -34,13 +40,15 @@
       "target": [
         "dmg"
       ],
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns"
     },
     "linux": {
       "target": [
         "AppImage"
       ],
-      "category": "Network"
+      "category": "Network",
+      "icon": "build/icon.png"
     }
   }
 }
