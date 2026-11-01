@@ -2,3 +2,4 @@ node_modules/
 dist/
 build_publish.bat
 build_publish.sh
+*.zip

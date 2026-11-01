@@ -1,7 +1,9 @@
 @echo off
 setlocal EnableExtensions
-REM Drift (cross-platform Electron build) - Windows single-file portable EXE.
-REM Requires Node.js 20+ (https://nodejs.org) on the BUILD MACHINE only.
+REM Drift Windows per-user installer.
+REM Installs the application under the current user's AppData\Local\Programs\Drift.
+REM Browser profile data is stored separately under %APPDATA%\Drift.
+REM Requires Node.js 20+ on the BUILD MACHINE only.
 
 where node >nul 2>nul
 if errorlevel 1 (
@@ -12,13 +14,9 @@ if errorlevel 1 (
 
 cd /d "%~dp0"
 
-echo Closing any running Drift.exe...
-taskkill /f /im Drift.exe >nul 2>&1
-timeout /t 1 /nobreak >nul
-
 echo.
-echo Installing dependencies...
-call npm install --no-audit --no-fund
+echo Installing locked project dependencies...
+call npm ci --no-audit --no-fund
 if errorlevel 1 goto :fail_end
 
 echo.
@@ -31,21 +29,24 @@ echo Cleaning previous dist output...
 if exist "dist" rmdir /s /q "dist"
 
 echo.
-echo Building portable Drift.exe...
-call npx electron-builder --win portable
+echo Building Drift per-user Windows installer...
+call npx electron-builder --win nsis
 if errorlevel 1 goto :fail_end
 
 echo.
 echo ============================================================
 echo Drift build complete.
-echo Output: %~dp0dist\Drift.exe
-echo Single-file portable EXE - Chromium is bundled, nothing else to install.
+echo Installer: %~dp0dist\Drift-Setup.exe
+echo.
+echo Installation is per-user and does not require Administrator access.
+echo App files: %LOCALAPPDATA%\Programs\Drift
+echo Profile:   %APPDATA%\Drift
 echo ============================================================
 exit /b 0
 
 :fail_end
 echo.
 echo Drift build failed. Review the output above.
-echo TIP: if you see a "symbolic link" error, enable Windows Developer Mode or run this as Administrator.
+echo TIP: if you see a symbolic-link error, enable Windows Developer Mode or run the build from an elevated terminal.
 pause
 exit /b 1

@@ -19,6 +19,19 @@ const tiles = [
     document.getElementById('clock').textContent = now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
   };
   tick(); setInterval(tick, 15000);
+  const searchEngines = {
+    duckduckgo: 'https://duckduckgo.com/?q=',
+    google: 'https://www.google.com/search?q=',
+    bing: 'https://www.bing.com/search?q=',
+    brave: 'https://search.brave.com/search?q='
+  };
+  const selectedEngine = new URLSearchParams(location.search).get('engine') || 'duckduckgo';
+  const params = new URLSearchParams(location.search);
+  const allowedThemes = ['violet', 'ocean', 'forest', 'rose', 'sunset', 'indigo', 'graphite', 'mint'];
+  const selectedTheme = params.get('theme');
+  const selectedMode = params.get('mode');
+  if (allowedThemes.includes(selectedTheme)) document.documentElement.dataset.colorTheme = selectedTheme;
+  if (['light', 'dark'].includes(selectedMode)) document.documentElement.dataset.theme = selectedMode;
   document.getElementById('f').addEventListener('submit', (e) => {
     e.preventDefault();
     const raw = document.getElementById('q').value.trim(); if (!raw) return;
@@ -26,6 +39,6 @@ const tiles = [
     if (/^(https?|file|about|data):/i.test(raw)) target = raw;
     else if (/^localhost(?::\d+)?(?:\/|$)/i.test(raw) || /^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:\/|$)/i.test(raw)) target = 'http://' + raw;
     else if (!/\s/.test(raw) && raw.includes('.')) target = 'https://' + raw;
-    else target = 'https://duckduckgo.com/?q=' + encodeURIComponent(raw);
+    else target = (searchEngines[selectedEngine] || searchEngines.duckduckgo) + encodeURIComponent(raw);
     location.href = target;
   });

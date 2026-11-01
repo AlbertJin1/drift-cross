@@ -37,3 +37,26 @@
   @media(max-width:680px) { .page-wrap{padding:22px 18px}.hero{margin-top:72px}.tiles{grid-template-columns:repeat(3,minmax(0,1fr))}.tile{min-height:92px}.section{margin-top:30px}.tagline{margin-bottom:24px}.clock{font-size:11px} }
 
 .tile-duck{background:#de5833}.tile-wiki{background:#636466}.tile-github{background:#343942}.tile-youtube{background:#df2535}.tile-reddit{background:#f15b36}
+
+/* The new-tab surface follows the user's saved Drift accent and light/dark mode. */
+:root[data-theme="dark"] { color-scheme:dark; --page:#11131b; --panel:#202535; --text:#f0f3fa; --muted:#969fb4; --line:#2d3447; }
+:root[data-theme="light"] { color-scheme:light; --page:#f5f6fa; --panel:#fff; --text:#202638; --muted:#66718b; --line:#dce1ec; }
+:root[data-color-theme="ocean"] { --accent:#67c9ef; --cyan:#54e6d3; }
+:root[data-color-theme="forest"] { --accent:#5bd6a4; --cyan:#b2e875; }
+:root[data-color-theme="rose"] { --accent:#ff8da8; --cyan:#ffc0d0; }
+:root[data-color-theme="sunset"] { --accent:#ffad72; --cyan:#f277a8; }
+:root[data-color-theme="indigo"] { --accent:#8ea4ff; --cyan:#7cd4f1; }
+:root[data-color-theme="graphite"] { --accent:#aab4c4; --cyan:#8bc8bf; }
+:root[data-color-theme="mint"] { --accent:#61d4d1; --cyan:#8bbcff; }
+:root[data-color-theme] {
+  --panel: color-mix(in srgb, var(--page) 94%, var(--accent) 6%);
+  --line: color-mix(in srgb, var(--panel) 82%, var(--accent) 18%);
+}
+
+
+.page-wrap { animation: newtab-in .32s cubic-bezier(.2,.8,.2,1) both; }
+.go, .tile { will-change: auto; }
+@keyframes newtab-in { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior:auto !important; animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important; }
+}

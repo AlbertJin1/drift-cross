@@ -1,7 +1,7 @@
 {
   "name": "drift",
-  "version": "1.1.0",
-  "description": "Drift \u2014 a fast, cross-platform browser with a custom Windows titlebar, live address bar, tabs, persistent bookmarks, privacy protection, spaces, and configurable settings.",
+  "version": "1.2.2",
+  "description": "Drift — a fast, cross-platform browser with a streamlined tab strip, persistent bookmarks, privacy protection, downloads, extensions, history, configurable settings, color themes, and context menus.",
   "main": "main.js",
   "license": "MIT",
   "author": "Drift contributors",
@@ -9,7 +9,8 @@
     "css:build": "tailwindcss -c tailwind.config.cjs -i ./ui/tailwind.css -o ./ui/tailwind.generated.css --minify",
     "start": "electron .",
     "predist": "npm run css:build",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "dist:win": "npm run css:build && electron-builder --win nsis"
   },
   "devDependencies": {
     "electron": "^45.0.0",
@@ -29,12 +30,10 @@
     ],
     "win": {
       "target": [
-        "portable"
+        "nsis"
       ],
-      "icon": "build/icon.ico"
-    },
-    "portable": {
-      "artifactName": "Drift.exe"
+      "icon": "build/icon.ico",
+      "artifactName": "Drift-Setup.${ext}"
     },
     "mac": {
       "target": [
@@ -49,6 +48,16 @@
       ],
       "category": "Network",
       "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Drift",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
     }
   }
 }

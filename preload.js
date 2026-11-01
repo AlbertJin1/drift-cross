@@ -1,20 +1,29 @@
 // Narrow, allow-listed IPC bridge between the browser chrome and main process.
 const { contextBridge, ipcRenderer } = require('electron');
 
-const RECEIVE_CHANNELS = ['state', 'focus-address', 'palette:open', 'open-bookmarks', 'open-adblock', 'open-settings'];
+const RECEIVE_CHANNELS = ['state', 'focus-address', 'palette:open', 'find:show'];
 const MANAGE_CHANNELS = [
-  'bookmark:update', 'bookmark:remove',
-  'adblock:toggle', 'adblock:toggle-site', 'adblock:reset-count', 'settings:update'
+  'bookmark:update', 'bookmark:remove', 'bookmark:add',
+  'history:remove', 'history:clear',
+  'adblock:toggle', 'adblock:toggle-site', 'adblock:reset-count', 'settings:update',
+  'downloads:action', 'find:query', 'find:next', 'find:close'
 ];
+const INVOKE_CHANNELS = ['downloads:choose-folder', 'downloads:clear', 'extensions:install', 'extensions:remove'];
 
 contextBridge.exposeInMainWorld('drift', {
   platform: process.platform,
   cmd: (name, arg) => ipcRenderer.send('cmd', name, arg),
   on: (channel, fn) => {
-    if (RECEIVE_CHANNELS.includes(channel)) ipcRenderer.on(channel, (_e, ...args) => fn(...args));
+    if (RECEIVE_CHANNELS.includes(channel) && typeof fn === 'function') {
+      ipcRenderer.on(channel, (_e, ...args) => fn(...args));
+    }
   },
   manage: (channel, ...args) => {
     if (MANAGE_CHANNELS.includes(channel)) ipcRenderer.send(channel, ...args);
+  },
+  invoke: (channel, ...args) => {
+    if (!INVOKE_CHANNELS.includes(channel)) return Promise.reject(new Error('Unsupported browser action.'));
+    return ipcRenderer.invoke(channel, ...args);
   },
   query: (q) => ipcRenderer.invoke('palette:query', q),
   run: (act) => ipcRenderer.send('palette:run', act),
