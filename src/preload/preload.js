@@ -1,14 +1,14 @@
 // Narrow, allow-listed IPC bridge between the browser chrome and main process.
 const { contextBridge, ipcRenderer } = require('electron');
 
-const RECEIVE_CHANNELS = ['state', 'focus-address', 'palette:open', 'find:show'];
+const RECEIVE_CHANNELS = ['state', 'focus-address', 'palette:open', 'find:show', 'extension:confirm', 'reset-address', 'clear-data:show'];
 const MANAGE_CHANNELS = [
   'bookmark:update', 'bookmark:remove', 'bookmark:add',
   'history:remove', 'history:clear',
   'adblock:toggle', 'adblock:toggle-site', 'adblock:reset-count', 'settings:update',
-  'downloads:action', 'find:query', 'find:next', 'find:close'
+  'downloads:action', 'find:query', 'find:next', 'find:close', 'extension:confirm-response'
 ];
-const INVOKE_CHANNELS = ['downloads:choose-folder', 'downloads:clear', 'extensions:install', 'extensions:remove'];
+const INVOKE_CHANNELS = ['downloads:choose-folder', 'downloads:clear', 'extensions:install', 'extensions:install-store', 'extensions:remove', 'data:clear'];
 
 contextBridge.exposeInMainWorld('drift', {
   platform: process.platform,

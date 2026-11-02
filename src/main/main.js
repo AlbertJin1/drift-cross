@@ -1,7 +1,14 @@
-const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, nativeTheme, dialog, shell, clipboard } = require('electron');
+const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, nativeTheme, dialog, shell, clipboard, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
+const { createExtensionManager } = require('./extensions');
+const { matchShortcut } = require('./shortcuts');
+
+// Project layout: src/main (this file), src/preload, src/renderer/*, build/ (icons).
+const ROOT_DIR = path.join(__dirname, '..', '..');
+const RENDERER_DIR = path.join(__dirname, '..', 'renderer');
+const PRELOAD_PATH = path.join(__dirname, '..', 'preload', 'preload.js');
 
 // Keep Drift's writable profile in the current user's AppData (Windows),
 // Application Support (macOS), or XDG config directory (Linux). The actual
@@ -10,14 +17,13 @@ app.setName('Drift');
 const LEGACY_USER_DATA_DIRECTORY = app.getPath('userData');
 const APP_DATA_DIRECTORY = path.join(app.getPath('appData'), 'Drift');
 app.setPath('userData', APP_DATA_DIRECTORY);
-const EXTENSIONS_DIRECTORY = path.join(APP_DATA_DIRECTORY, 'Extensions');
 
 // ---------------------------------------------------------------- config
 const IS_WINDOWS = process.platform === 'win32';
 const CHROME_H_WITH_BOOKMARKS = 108; // tab strip + navigation toolbar + bookmarks bar
 const CHROME_H_WITHOUT_BOOKMARKS = 82;
 const IDLE_DISCARD_MS = 5 * 60 * 1000;
-const NEWTAB = pathToFileURL(path.join(__dirname, 'ui', 'newtab.html')).href;
+const NEWTAB = pathToFileURL(path.join(RENDERER_DIR, 'newtab', 'newtab.html')).href;
 const SETTINGS_FILE = 'settings.json';
 
 // Network-level block rules. Keep these as host rules (rather than broad URL
@@ -75,7 +81,6 @@ function isPathInside(parent, candidate) {
 }
 function ensureUserDataDirectories() {
   fs.mkdirSync(APP_DATA_DIRECTORY, { recursive: true });
-  fs.mkdirSync(EXTENSIONS_DIRECTORY, { recursive: true });
   fs.mkdirSync(path.join(APP_DATA_DIRECTORY, 'Logs'), { recursive: true });
   // One-time migration for profiles created by an earlier build using the
   // Electron default userData path. Existing files are never overwritten.
@@ -104,6 +109,38 @@ const writeJson = (f, v) => {
   }
 };
 
+// Chrome-compatible extensions: Chrome Web Store installs + unpacked folders.
+const extensions = createExtensionManager({
+  session: () => session.defaultSession,
+  appDataDir: APP_DATA_DIRECTORY,
+  readJson, writeJson,
+  confirmInstall: (info) => requestExtensionConfirmation(info),
+  onChange: () => push()
+});
+
+// Themed "Add extension" confirmation. The dialog lives in the browser chrome
+// (renderer/browser); this promise resolves when the user answers it.
+const pendingExtensionConfirms = new Map();
+let extensionConfirmSeq = 0;
+function requestExtensionConfirmation(info) {
+  return new Promise((resolve) => {
+    if (!ui || ui.webContents.isDestroyed()) { resolve(false); return; }
+    const id = ++extensionConfirmSeq;
+    const timer = setTimeout(() => finish(false), 10 * 60 * 1000);
+    const finish = (allowed) => {
+      clearTimeout(timer);
+      if (!pendingExtensionConfirms.delete(id)) return;
+      resolve(allowed === true);
+    };
+    pendingExtensionConfirms.set(id, finish);
+    setUIOverlay(true);
+    ui.webContents.send('extension:confirm', { ...info, requestId: id });
+  });
+}
+ipcMain.on('extension:confirm-response', (_event, requestId, allowed) => {
+  pendingExtensionConfirms.get(Number(requestId))?.(allowed === true);
+});
+
 // ---------------------------------------------------------------- state
 let win, ui, palette;
 let nextId = 1;
@@ -119,14 +156,24 @@ let allowlistedSites = [];
 let appearance = 'system';
 let colorTheme = 'violet';
 let searchEngine = 'duckduckgo';
-let restoreSession = true;
+// Startup + new-tab preferences.
+//   startupMode: newtab (fresh New Tab page) | previous (continue where you left off)
+//                | specific (open a chosen set of pages) | homepage (open the home page)
+let startupMode = 'previous';
+let startupPages = [];
+let homepage = '';
+let showHomeButton = false;
+let newTabOpens = 'newtab';        // newtab | homepage | blank
+let newTabShortcuts = 'smart';     // smart (most visited) | bookmarks | hidden
+let newTabClock = true;
+let windowStart = 'default';       // default | maximized | remember
+let launchAtLogin = false;
 let showBookmarksBar = true;
 let downloadDirectory = app.getPath('downloads');
 let askWhereToSave = false;
 let blockedHostCounts = Object.create(null);
 let downloads = [];
 let downloadPersistTimer = null;
-let extensionDirectories = [];
 let findState = { visible: false, query: '', matchCase: false, activeMatchOrdinal: 0, matches: 0 };
 // A single browser workspace replaces the former Home / Work / Fun spaces.
 const spaces = [{ name: 'Browser', tabs: [], active: null }];
@@ -134,7 +181,78 @@ let cur = spaces[0];
 const activeTab = () => cur.active;
 
 // ---------------------------------------------------------------- helpers
-function newTabUrl() { return `${NEWTAB}?engine=${encodeURIComponent(searchEngine)}&theme=${encodeURIComponent(colorTheme)}&mode=${encodeURIComponent(appearance)}`; }
+const SEARCH_ENGINES = ['duckduckgo', 'google', 'bing', 'brave'];
+const COLOR_THEME_IDS = ['violet', 'ocean', 'forest', 'rose', 'sunset', 'indigo', 'graphite', 'mint'];
+const APPEARANCES = ['system', 'light', 'dark'];
+const STARTUP_MODES = ['newtab', 'previous', 'specific', 'homepage'];
+const NEWTAB_OPEN_MODES = ['newtab', 'homepage', 'blank'];
+const SHORTCUT_MODES = ['smart', 'bookmarks', 'hidden'];
+const WINDOW_START_MODES = ['default', 'maximized', 'remember'];
+const MAX_STARTUP_PAGES = 12;
+
+// Accepts "example.com", "https://example.com/x" or "about:blank"; returns '' when unusable.
+function normalizeUrlSetting(value) {
+  const raw = String(value || '').trim().slice(0, 2048);
+  if (!raw || /\s/.test(raw)) return '';
+  if (/^about:blank$/i.test(raw)) return 'about:blank';
+  const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const u = new URL(candidate);
+    return ['http:', 'https:'].includes(u.protocol) && u.hostname ? u.href : '';
+  } catch { return ''; }
+}
+function cleanStartupPages(list) {
+  const out = [];
+  for (const item of Array.isArray(list) ? list : []) {
+    const url = normalizeUrlSetting(item);
+    if (url && !out.includes(url)) out.push(url);
+    if (out.length >= MAX_STARTUP_PAGES) break;
+  }
+  return out;
+}
+
+// The New Tab page is a sandboxed local file with no IPC, so the few things it
+// personalises with (most-visited sites, recent bookmarks) travel in the URL.
+function newTabData() {
+  const clip = (text, max) => String(text || '').slice(0, max);
+  const data = {};
+  const recent = bookmarks.filter((b) => /^https?:/i.test(b.url)).slice().sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)).slice(0, 24);
+  if (recent.length) data.b = recent.map((b) => [clip(b.title || hostnameOf(b.url), 40), clip(b.url, 160)]);
+  if (newTabShortcuts === 'smart') {
+    const sites = new Map();
+    for (const h of history) {
+      const host = hostnameOf(h.url);
+      if (!host) continue;
+      let entry = sites.get(host);
+      if (!entry) { let origin = ''; try { origin = new URL(h.url).origin + '/'; } catch { continue; } entry = { n: 0, last: 0, origin }; sites.set(host, entry); }
+      entry.n += 1; entry.last = Math.max(entry.last, Number(h.visitedAt) || 0);
+    }
+    const top = [...sites.entries()].sort((a, b) => b[1].n - a[1].n || b[1].last - a[1].last).slice(0, 10);
+    if (top.length) data.s = top.map(([host, entry]) => [clip(host.replace(/^www\./, ''), 40), clip(entry.origin, 160)]);
+  }
+  return data;
+}
+function newTabUrl() {
+  const q = new URLSearchParams({ engine: searchEngine, theme: colorTheme, mode: appearance, sc: newTabShortcuts, clock: newTabClock ? '1' : '0' });
+  const data = newTabData();
+  if (data.b || data.s) q.set('d', Buffer.from(JSON.stringify(data)).toString('base64url'));
+  return `${NEWTAB}?${q}`;
+}
+// What the Home button / Alt+Home opens, and what a brand-new tab opens.
+function homeUrl() { return homepage || newTabUrl(); }
+function newTabOpenUrl() {
+  if (newTabOpens === 'blank') return 'about:blank';
+  if (newTabOpens === 'homepage' && homepage) return homepage;
+  return newTabUrl();
+}
+function applyAppearance() {
+  nativeTheme.themeSource = appearance; // makes prefers-color-scheme (chrome, New Tab and websites) follow the choice
+  if (win && !win.isDestroyed()) win.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#11131b' : '#f5f6fa');
+}
+function applyLoginItem() {
+  if (!app.isPackaged || process.platform === 'linux') return;
+  try { app.setLoginItemSettings({ openAtLogin: launchAtLogin }); } catch { /* unsupported on this platform */ }
+}
 function isNewTabUrl(value) { return !value || value === NEWTAB || String(value).startsWith(`${NEWTAB}?`); }
 
 function resolve(input) {
@@ -231,16 +349,17 @@ function snapshot() {
     bookmarksCount: allBookmarks.length,
     history: activeInternalPage === 'history' ? history.slice().reverse() : [],
     downloads: activeInternalPage === 'downloads' ? downloads.slice().sort((a, b) => b.startedAt - a.startedAt) : [],
-    extensions: activeInternalPage === 'extensions' ? getExtensionList() : [],
+    extensions: activeInternalPage === 'extensions' ? extensions.list() : [],
     find: { ...findState },
     blocked: blockedCount,
     adBlockEnabled,
     currentHost: host,
     siteAllowed: isSiteAllowed(host),
     blockedHosts: Object.entries(blockedHostCounts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([hostName, count]) => ({ host: hostName, count })),
-    settings: { appearance, colorTheme, searchEngine, restoreSession, showBookmarksBar, downloadDirectory, askWhereToSave },
+    settings: { appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, showBookmarksBar, downloadDirectory, askWhereToSave },
+    canLaunchAtLogin: process.platform !== 'linux',
     profileDirectory: app.getPath('userData'),
-    extensionsDirectory: EXTENSIONS_DIRECTORY,
+    extensionsDirectory: extensions.directory,
     version: app.getVersion(),
     electronVersion: process.versions.electron,
     chromiumVersion: process.versions.chrome,
@@ -287,7 +406,7 @@ function sortedBookmarks() {
   return bookmarksSortedCache;
 }
 function persistBookmarks() { bookmarksSortedCache = null; writeJson('bookmarks.json', bookmarks); }
-function persistSettings() { writeJson(SETTINGS_FILE, { adBlockEnabled, allowlistedSites, appearance, colorTheme, searchEngine, restoreSession, showBookmarksBar, downloadDirectory, askWhereToSave }); }
+function persistSettings() { writeJson(SETTINGS_FILE, { adBlockEnabled, allowlistedSites, appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, showBookmarksBar, downloadDirectory, askWhereToSave }); }
 
 
 function persistDownloads(immediate = false) {
@@ -304,15 +423,6 @@ function persistDownloads(immediate = false) {
   }, 700);
   downloadPersistTimer.unref?.();
 }
-function getExtensionList() {
-  try {
-    return session.defaultSession.extensions.getAllExtensions().map((extension) => ({
-      id: extension.id, name: extension.name || 'Unnamed extension', version: extension.version || '',
-      description: extension.manifest?.description || '', path: extension.path || ''
-    }));
-  } catch { return []; }
-}
-
 const activeDownloads = new Map();
 function recordDownload(item, id) {
   const found = downloads.find((entry) => entry.id === id);
@@ -343,49 +453,6 @@ function handleDownloadAction(id, action) {
   push();
 }
 
-function extensionDirectoryName(manifest) {
-  const rawName = String(manifest?.name || 'extension').replace(/__MSG_.*?__/g, 'extension');
-  const safeName = rawName.normalize('NFKD').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'extension';
-  return `${safeName}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-async function installExtensionFromFolder(folder) {
-  const chosenFolder = String(folder || '').trim();
-  if (!chosenFolder) throw new Error('Select an unpacked extension folder containing manifest.json.');
-  const sourceFolder = path.resolve(chosenFolder);
-  const sourceManifestPath = path.join(sourceFolder, 'manifest.json');
-  if (!fs.existsSync(sourceManifestPath)) throw new Error('Select an unpacked extension folder containing manifest.json.');
-
-  let manifest;
-  try { manifest = JSON.parse(fs.readFileSync(sourceManifestPath, 'utf8')); }
-  catch { throw new Error('The selected extension has an invalid manifest.json file.'); }
-  if (!manifest || ![2, 3].includes(Number(manifest.manifest_version))) throw new Error('The extension manifest must use Chromium Manifest V2 or V3.');
-
-  // Extension files are copied into the Drift profile so their availability
-  // does not depend on the original ZIP/extraction folder or removable drive.
-  let managedFolder = sourceFolder;
-  let copiedFolder = false;
-  if (!isPathInside(EXTENSIONS_DIRECTORY, sourceFolder)) {
-    managedFolder = path.join(EXTENSIONS_DIRECTORY, extensionDirectoryName(manifest));
-    try { fs.cpSync(sourceFolder, managedFolder, { recursive: true, errorOnExist: true, force: false, dereference: true }); }
-    catch (error) { throw new Error(`Could not copy the extension into Drift's AppData profile: ${error?.message || error}`); }
-    copiedFolder = true;
-  }
-
-  const existing = extensionDirectories.find((entry) => path.resolve(entry) === path.resolve(managedFolder));
-  if (existing) return getExtensionList();
-  try {
-    await session.defaultSession.extensions.loadExtension(managedFolder, { allowFileAccess: false });
-  } catch (error) {
-    if (copiedFolder) { try { fs.rmSync(managedFolder, { recursive: true, force: true }); } catch { /* preserve install error */ } }
-    throw error;
-  }
-  extensionDirectories.push(managedFolder);
-  writeJson('extensions.json', extensionDirectories);
-  push();
-  return getExtensionList();
-}
-
 // ---------------------------------------------------------------- tabs
 function attachView(tab) {
   const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: true } });
@@ -396,6 +463,12 @@ function attachView(tab) {
   view.setVisible(false);
 
   const wc = view.webContents;
+  bindShortcuts(wc);
+  // Ctrl + mouse wheel / pinch zoom, which Electron reports but does not apply.
+  wc.on('zoom-changed', (_event, direction) => {
+    const level = wc.getZoomLevel() + (direction === 'in' ? 0.5 : -0.5);
+    wc.setZoomLevel(Math.min(5, Math.max(-3, level)));
+  });
   installWebContentsContextMenu(wc, 'page');
   wc.setWindowOpenHandler(({ url }) => { createTab(url); return { action: 'deny' }; });
   wc.on('found-in-page', (_event, result) => {
@@ -547,12 +620,31 @@ function installWebContentsContextMenu(webContents, surface = 'page') {
   });
 }
 
+// ---------------------------------------------------------------- closed tabs
+const MAX_CLOSED_TABS = 25;
+const closedTabs = [];
+function rememberClosedTab(tab, index) {
+  const url = tab?.url || '';
+  if (!url || isNewTabUrl(url) || url === 'about:blank') return; // Like Chrome, blank new tabs are not restorable.
+  closedTabs.push({ url, title: tab.title || '', favicon: tab.favicon || '', index });
+  if (closedTabs.length > MAX_CLOSED_TABS) closedTabs.shift();
+}
+function reopenClosedTab() {
+  const entry = closedTabs.pop();
+  if (!entry) return null;
+  const tab = { id: nextId++, title: entry.title || 'New tab', url: entry.url, favicon: entry.favicon || '', loading: false, lastActive: Date.now(), view: null };
+  cur.tabs.splice(Math.min(Math.max(entry.index, 0), cur.tabs.length), 0, tab);
+  activateTab(tab);
+  saveSession();
+  return tab;
+}
+
 function createTab(input) {
-  const tab = { id: nextId++, title: 'New tab', url: input ? resolve(input) : newTabUrl(), favicon: '', loading: false, lastActive: Date.now(), view: null };
+  const tab = { id: nextId++, title: 'New tab', url: input ? resolve(input) : newTabOpenUrl(), favicon: '', loading: false, lastActive: Date.now(), view: null };
   cur.tabs.push(tab);
   activateTab(tab);
   saveSession();
-  if (!input) focusAddress();
+  if (!input) focusNewTab(tab);
   return tab;
 }
 
@@ -595,6 +687,8 @@ function destroyView(tab) {
 function closeTab(tab) {
   const i = cur.tabs.indexOf(tab);
   if (i < 0) return;
+  tab.url = liveUrl(tab) || tab.url;
+  rememberClosedTab(tab, i);
   cur.tabs.splice(i, 1);
   destroyView(tab);
   if (!cur.tabs.length) { cur.active = null; createTab(); return; }
@@ -700,8 +794,9 @@ function openPalette() {
   paletteOpen = true;
   if (!palette) {
     // Load the palette only on first use to reduce cold-start WebContents work.
-    const palettePrefs = { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true };
+    const palettePrefs = { preload: PRELOAD_PATH, contextIsolation: true, sandbox: true };
     palette = new WebContentsView({ webPreferences: palettePrefs });
+    bindShortcuts(palette.webContents);
     palette.setBackgroundColor('#00000000');
     palette.webContents.on('will-navigate', (e) => e.preventDefault());
     palette.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -717,7 +812,7 @@ function openPalette() {
       palette.webContents.focus();
       palette.webContents.send('palette:open');
     });
-    palette.webContents.loadFile(path.join(__dirname, 'ui', 'palette.html')).catch(() => {
+    palette.webContents.loadFile(path.join(RENDERER_DIR, 'palette', 'palette.html')).catch(() => {
       paletteOpen = false;
     });
     return;
@@ -750,6 +845,16 @@ function focusAddress() {
   ui?.webContents.send('focus-address');
 }
 
+// A fresh tab: empty the address bar and hand focus to the page's own search
+// box (newtab.js focuses it on load). Pages that have no input of their own
+// (a blank page or a custom home page) still get the address bar, like Chrome.
+function focusNewTab(tab) {
+  if (tab && isNewTabUrl(tab.url)) {
+    ui?.webContents.send('reset-address');
+    if (!paletteOpen) tab.view?.webContents.focus();
+  } else focusAddress();
+}
+
 ipcMain.handle('palette:query', (_e, query) => {
   const q = String(query || '').trim();
   const needle = q.toLowerCase();
@@ -765,7 +870,7 @@ ipcMain.handle('palette:query', (_e, query) => {
   const commands = [
     ['New tab', 'new'], ['Close tab', 'close'], ['Next tab', 'next-tab'], ['Previous tab', 'previous-tab'], ['Reader mode', 'reader'],
     ['Bookmark or unbookmark this page', 'bookmark'], ['Open bookmarks manager', 'bookmarks'],
-    ['Open history', 'history'], ['Open downloads', 'downloads'], ['Open extensions', 'extensions'], ['Open settings', 'settings'],
+    ['Open home page', 'home'], ['Open history', 'history'], ['Clear browsing data', 'clear-data'], ['Open downloads', 'downloads'], ['Open extensions', 'extensions'], ['Open settings', 'settings'],
     ['Toggle ad blocker', 'adblock'], ['Developer tools', 'devtools'],
   ];
   commands.filter(([label]) => hit(label)).forEach(([label, name]) => out.push({ kind: 'command', label, sub: 'Command', act: { type: 'cmd', name } }));
@@ -813,6 +918,20 @@ function setUIOverlay(open) {
   }
 }
 
+// ---------------------------------------------------------------- shortcuts
+// Handled in the main process on every surface so they work whether focus is
+// in a page, the address bar, the command palette, or an internal page.
+function bindShortcuts(webContents) {
+  webContents.on('before-input-event', (event, input) => {
+    const match = matchShortcut(input);
+    if (!match) return;
+    // While the palette is open only its own toggle applies.
+    if (paletteOpen && match.name !== 'palette') return;
+    event.preventDefault();
+    command(match.name, match.arg);
+  });
+}
+
 // ---------------------------------------------------------------- commands
 function command(name, arg) {
   const t = activeTab();
@@ -824,11 +943,39 @@ function command(name, arg) {
     case 'next-tab': if (cur.tabs.length > 1) activateTab(cur.tabs[(cur.tabs.indexOf(t) + 1 + cur.tabs.length) % cur.tabs.length]); break;
     case 'previous-tab': if (cur.tabs.length > 1) activateTab(cur.tabs[(cur.tabs.indexOf(t) - 1 + cur.tabs.length) % cur.tabs.length]); break;
     case 'go': go(arg); break;
+    case 'home': go(homeUrl()); break;
+    case 'startup-use-open-tabs':
+      startupPages = cleanStartupPages(cur.tabs.map((x) => liveUrl(x) || x.url).filter((u) => /^https?:/i.test(u || '')));
+      persistSettings(); push(); break;
+    case 'reopen-tab': reopenClosedTab(); break;
+    case 'select-tab': {
+      if (!cur.tabs.length) break;
+      const n = Number(arg);
+      const target = n >= 9 ? cur.tabs[cur.tabs.length - 1] : cur.tabs[n - 1];
+      if (target && target !== t) activateTab(target);
+      break;
+    }
+    case 'close-window': win?.close(); break;
+    case 'fullscreen': if (win) { win.setFullScreen(!win.isFullScreen()); } break;
+    case 'print': if (wc && !isInternalUrl(t?.url)) wc.print(); break;
+    case 'zoom-in': case 'zoom-out': case 'zoom-reset': {
+      if (!wc || isInternalUrl(t?.url)) break;
+      const level = name === 'zoom-reset' ? 0 : Math.min(5, Math.max(-3, wc.getZoomLevel() + (name === 'zoom-in' ? 0.5 : -0.5)));
+      wc.setZoomLevel(level);
+      break;
+    }
+    case 'find-next': {
+      if (!wc || isInternalUrl(t?.url)) break;
+      if (!findState.visible) { command('find'); break; }
+      if (findState.query) wc.findInPage(findState.query, { forward: arg !== 'previous', findNext: true, matchCase: !!findState.matchCase });
+      break;
+    }
     case 'back': if (isInternalUrl(t?.url)) go(t.previousUrl || newTabUrl()); else if (wc?.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); break;
     case 'forward': if (wc?.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); break;
     case 'reload': {
-      const target = arg ? cur.tabs.find((x) => x.id === arg) : t;
+      const target = typeof arg === 'number' ? cur.tabs.find((x) => x.id === arg) : t;
       if (target && !target.view) activateTab(target);
+      else if (arg === 'hard' && !isInternalUrl(target?.url)) target?.view?.webContents.reloadIgnoringCache();
       else target?.view?.webContents.reload();
       break;
     }
@@ -843,7 +990,7 @@ function command(name, arg) {
       const activeWasClosed = closing.includes(cur.active);
       for (const tab of closing) {
         const index = cur.tabs.indexOf(tab);
-        if (index >= 0) cur.tabs.splice(index, 1);
+        if (index >= 0) { tab.url = liveUrl(tab) || tab.url; rememberClosedTab(tab, index); cur.tabs.splice(index, 1); }
         destroyView(tab);
       }
       if (!cur.tabs.length) { cur.active = null; createTab(); }
@@ -855,6 +1002,7 @@ function command(name, arg) {
     case 'bookmark': toggleBookmark(); break;
     case 'bookmarks': openInternalPage('bookmarks'); break;
     case 'history': openInternalPage('history'); break;
+    case 'clear-data': ui?.webContents.focus(); ui?.webContents.send('clear-data:show'); break;
     case 'downloads': openInternalPage('downloads'); break;
     case 'extensions': openInternalPage('extensions'); break;
     case 'settings': openInternalPage('settings'); break;
@@ -926,10 +1074,18 @@ ipcMain.on('adblock:reset-count', () => { blockedCount = 0; blockedHostCounts = 
 ipcMain.on('settings:update', (_e, patch) => {
   if (!patch || typeof patch !== 'object') return;
   let refreshNewTabs = false;
-  if (['system', 'light', 'dark'].includes(patch.appearance) && patch.appearance !== appearance) { appearance = patch.appearance; refreshNewTabs = true; }
-  if (['violet', 'ocean', 'forest', 'rose', 'sunset', 'indigo', 'graphite', 'mint'].includes(patch.colorTheme) && patch.colorTheme !== colorTheme) { colorTheme = patch.colorTheme; refreshNewTabs = true; }
-  if (['duckduckgo', 'google', 'bing', 'brave'].includes(patch.searchEngine) && patch.searchEngine !== searchEngine) { searchEngine = patch.searchEngine; refreshNewTabs = true; }
-  if (typeof patch.restoreSession === 'boolean') restoreSession = patch.restoreSession;
+  if (APPEARANCES.includes(patch.appearance) && patch.appearance !== appearance) { appearance = patch.appearance; refreshNewTabs = true; applyAppearance(); }
+  if (COLOR_THEME_IDS.includes(patch.colorTheme) && patch.colorTheme !== colorTheme) { colorTheme = patch.colorTheme; refreshNewTabs = true; }
+  if (SEARCH_ENGINES.includes(patch.searchEngine) && patch.searchEngine !== searchEngine) { searchEngine = patch.searchEngine; refreshNewTabs = true; }
+  if (SHORTCUT_MODES.includes(patch.newTabShortcuts) && patch.newTabShortcuts !== newTabShortcuts) { newTabShortcuts = patch.newTabShortcuts; refreshNewTabs = true; }
+  if (typeof patch.newTabClock === 'boolean' && patch.newTabClock !== newTabClock) { newTabClock = patch.newTabClock; refreshNewTabs = true; }
+  if (STARTUP_MODES.includes(patch.startupMode)) startupMode = patch.startupMode;
+  if (Array.isArray(patch.startupPages)) startupPages = cleanStartupPages(patch.startupPages);
+  if (typeof patch.homepage === 'string') homepage = normalizeUrlSetting(patch.homepage);
+  if (typeof patch.showHomeButton === 'boolean') showHomeButton = patch.showHomeButton;
+  if (NEWTAB_OPEN_MODES.includes(patch.newTabOpens)) newTabOpens = patch.newTabOpens;
+  if (WINDOW_START_MODES.includes(patch.windowStart)) { windowStart = patch.windowStart; if (windowStart === 'remember') saveWindowState(); }
+  if (typeof patch.launchAtLogin === 'boolean' && patch.launchAtLogin !== launchAtLogin && process.platform !== 'linux') { launchAtLogin = patch.launchAtLogin; applyLoginItem(); }
   if (typeof patch.showBookmarksBar === 'boolean') showBookmarksBar = patch.showBookmarksBar;
   if (typeof patch.askWhereToSave === 'boolean') askWhereToSave = patch.askWhereToSave;
   if (typeof patch.downloadDirectory === 'string' && patch.downloadDirectory.trim()) downloadDirectory = patch.downloadDirectory.trim();
@@ -957,23 +1113,95 @@ ipcMain.handle('downloads:choose-folder', async () => {
 ipcMain.handle('extensions:install', async () => {
   const result = await dialog.showOpenDialog(win, { title: 'Select unpacked extension folder', properties: ['openDirectory'] });
   if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
-  try { await installExtensionFromFolder(result.filePaths[0]); return { ok: true }; }
+  try { await extensions.installFromFolder(result.filePaths[0]); push(); return { ok: true }; }
   catch (error) { return { error: error?.message || 'The extension could not be installed.' }; }
 });
-ipcMain.handle('extensions:remove', async (_event, id) => {
-  const extensionId = String(id || '');
-  const extension = getExtensionList().find((entry) => entry.id === extensionId);
-  if (!extension) return { error: 'Extension not found.' };
-  try {
-    await session.defaultSession.extensions.removeExtension(extensionId);
-    extensionDirectories = extensionDirectories.filter((folder) => path.resolve(folder) !== path.resolve(extension.path));
-    if (isPathInside(EXTENSIONS_DIRECTORY, extension.path)) {
-      try { fs.rmSync(extension.path, { recursive: true, force: true }); }
-      catch (error) { console.warn('Drift could not remove extension files:', error?.message || error); }
-    }
-    writeJson('extensions.json', extensionDirectories); push(); return { ok: true };
-  } catch (error) { return { error: error?.message || 'Could not remove extension.' }; }
+ipcMain.handle('extensions:install-store', async (_event, input) => {
+  try { const installed = await extensions.installFromWebStore(input); push(); return { ok: true, name: installed?.name || '' }; }
+  catch (error) {
+    if (error?.cancelled) return { cancelled: true };
+    return { error: error?.message || 'The extension could not be installed from the Chrome Web Store.' };
+  }
 });
+ipcMain.handle('extensions:remove', async (_event, id) => {
+  try { await extensions.remove(id); push(); return { ok: true }; }
+  catch (error) { return { error: error?.message || 'Could not remove extension.' }; }
+});
+// ---------------------------------------------------------------- clear browsing data
+// Electron's storage-clearing APIs have no time filter, so for "last hour / day /
+// week / 4 weeks" we remove site data (cookies, storage) for the sites that
+// appear in history during that period, and empty the HTTP cache completely
+// (it only holds re-downloadable copies). "All time" wipes everything.
+const CLEAR_RANGES = { hour: 3600e3, day: 24 * 3600e3, week: 7 * 24 * 3600e3, month: 28 * 24 * 3600e3, all: Infinity };
+const CLEAR_TYPES = ['history', 'downloads', 'cookies', 'cache', 'siteSettings'];
+const ALL_STORAGES = ['cookies', 'filesystem', 'indexdb', 'localstorage', 'websql', 'serviceworkers', 'cachestorage'];
+const hostFromUrl = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
+
+ipcMain.handle('data:clear', async (_e, opts = {}) => {
+  const range = Object.prototype.hasOwnProperty.call(CLEAR_RANGES, opts?.range) ? opts.range : 'hour';
+  const types = new Set((Array.isArray(opts?.types) ? opts.types : []).filter((t) => CLEAR_TYPES.includes(t)));
+  if (!types.size) return { error: 'Select at least one type of data to clear.' };
+  const all = range === 'all';
+  const cutoff = all ? 0 : Date.now() - CLEAR_RANGES[range];
+  const inRange = (ts) => all || (Number(ts) || 0) >= cutoff;
+  const ses = session.defaultSession;
+  const result = {};
+  const failures = [];
+
+  // Sites visited in the period. Must be captured BEFORE history is removed.
+  const hosts = new Set();
+  if (!all) for (const h of history) if (inRange(h.visitedAt)) { const host = hostFromUrl(h.url); if (host) hosts.add(host); }
+  const hostInScope = (domain) => {
+    const d = String(domain || '').replace(/^\./, '').toLowerCase();
+    return all || [...hosts].some((h) => h === d || h.endsWith(`.${d}`));
+  };
+
+  if (types.has('cookies')) {
+    try {
+      if (all) {
+        await ses.clearStorageData({ storages: ALL_STORAGES });
+        result.cookies = 'all sites';
+      } else {
+        let removed = 0;
+        for (const cookie of await ses.cookies.get({})) {
+          if (!hostInScope(cookie.domain)) continue;
+          const url = `${cookie.secure ? 'https' : 'http'}://${String(cookie.domain).replace(/^\./, '')}${cookie.path || '/'}`;
+          try { await ses.cookies.remove(url, cookie.name); removed++; } catch { /* already gone */ }
+        }
+        for (const host of hosts) {
+          for (const scheme of ['https', 'http']) {
+            await ses.clearStorageData({ origin: `${scheme}://${host}`, storages: ALL_STORAGES.filter((s) => s !== 'cookies') }).catch(() => {});
+          }
+        }
+        result.cookies = `${removed} cookies, ${hosts.size} sites`;
+      }
+    } catch (error) { failures.push('cookies and site data'); }
+  }
+  if (types.has('cache')) {
+    try { await ses.clearCache(); await ses.clearCodeCaches({}).catch(() => {}); result.cache = true; }
+    catch (error) { failures.push('cached files'); }
+  }
+  if (types.has('history')) {
+    const before = history.length;
+    history = all ? [] : history.filter((h) => !inRange(h.visitedAt));
+    writeJson('history.json', history);
+    result.history = before - history.length;
+  }
+  if (types.has('downloads')) {
+    const before = downloads.length;
+    downloads = downloads.filter((d) => !['completed', 'cancelled', 'interrupted'].includes(d.state) || !inRange(d.startedAt));
+    persistDownloads(true);
+    result.downloads = before - downloads.length;
+  }
+  if (types.has('siteSettings')) {
+    result.siteSettings = allowlistedSites.length;
+    allowlistedSites = [];
+    persistSettings();
+  }
+  push();
+  return failures.length ? { error: `Couldn’t clear ${failures.join(' and ')}.`, cleared: result } : { ok: true, cleared: result };
+});
+
 ipcMain.handle('downloads:clear', () => {
   downloads = downloads.filter((entry) => !['completed', 'cancelled', 'interrupted'].includes(entry.state));
   persistDownloads(true); push(); return true;
@@ -989,18 +1217,42 @@ ipcMain.on('window:action', (_e, action) => {
 
 function buildMenu() {
   const mac = process.platform === 'darwin';
-  const item = (label, accelerator, name, arg) => ({ label, accelerator, click: () => command(name, arg) });
+  // Accelerators are handled in bindShortcuts() on every surface; the menu only
+  // displays them (registerAccelerator: false on Windows/Linux) to avoid double firing.
+  const item = (label, accelerator, name, arg) => ({ label, accelerator, registerAccelerator: false, click: () => command(name, arg) });
   const template = [
     ...(mac ? [{ role: 'appMenu' }] : []),
+    { label: 'Tabs', submenu: [
+      item('New tab', 'CmdOrCtrl+T', 'new'),
+      item('Reopen closed tab', 'CmdOrCtrl+Shift+T', 'reopen-tab'),
+      item('Close tab', 'CmdOrCtrl+W', 'close'),
+      item('Close window', 'CmdOrCtrl+Shift+W', 'close-window'),
+      { type: 'separator' },
+      item('Next tab', 'Ctrl+Tab', 'next-tab'),
+      item('Previous tab', 'Ctrl+Shift+Tab', 'previous-tab'),
+      item('Select tab 1–8', 'CmdOrCtrl+1', 'select-tab', 1),
+      item('Select last tab', 'CmdOrCtrl+9', 'select-tab', 9)
+    ]},
     { label: 'Browser', submenu: [
-      item('Command palette', 'CmdOrCtrl+K', 'palette'), item('New tab', 'CmdOrCtrl+T', 'new'),
-      item('Close tab', 'CmdOrCtrl+W', 'close'), item('Next tab', 'Ctrl+Tab', 'next-tab'), item('Previous tab', 'Ctrl+Shift+Tab', 'previous-tab'), item('Address bar', 'CmdOrCtrl+L', 'address'),
+      item('Command palette', 'CmdOrCtrl+K', 'palette'), item('Address bar', 'CmdOrCtrl+L', 'address'),
+      item('Home', mac ? 'Cmd+Shift+H' : 'Alt+Home', 'home'),
       item('Bookmark page', 'CmdOrCtrl+D', 'bookmark'), item('Bookmarks manager', 'CmdOrCtrl+Shift+B', 'bookmarks'),
-      item('History', 'CmdOrCtrl+H', 'history'), item('Downloads', 'CmdOrCtrl+J', 'downloads'), item('Extensions', 'CmdOrCtrl+Shift+E', 'extensions'), item('Find in page', 'CmdOrCtrl+F', 'find'),
-      item('Reload', 'CmdOrCtrl+R', 'reload'), item('Back', mac ? 'Cmd+[' : 'Alt+Left', 'back'),
-      item('Forward', mac ? 'Cmd+]' : 'Alt+Right', 'forward'), item('Reader mode', 'CmdOrCtrl+Shift+R', 'reader'),
-      item('Toggle ad blocker', 'CmdOrCtrl+Shift+A', 'adblock'), { type: 'separator' },
-      { type: 'separator' }, item('Settings', 'CmdOrCtrl+,', 'settings'), item('Developer tools', 'F12', 'devtools')
+      item('History', 'CmdOrCtrl+H', 'history'), item('Downloads', 'CmdOrCtrl+J', 'downloads'), item('Extensions', 'CmdOrCtrl+Shift+E', 'extensions'),
+      item('Clear browsing data…', 'CmdOrCtrl+Shift+Delete', 'clear-data'),
+      { type: 'separator' },
+      item('Find in page', 'CmdOrCtrl+F', 'find'), item('Find next', 'CmdOrCtrl+G', 'find-next', 'next'), item('Find previous', 'CmdOrCtrl+Shift+G', 'find-next', 'previous'),
+      item('Print…', 'CmdOrCtrl+P', 'print'),
+      { type: 'separator' },
+      item('Reload', 'CmdOrCtrl+R', 'reload'), item('Hard reload', 'CmdOrCtrl+F5', 'reload', 'hard'),
+      item('Back', mac ? 'Cmd+[' : 'Alt+Left', 'back'), item('Forward', mac ? 'Cmd+]' : 'Alt+Right', 'forward'),
+      item('Reader mode', 'CmdOrCtrl+Shift+R', 'reader'), item('Toggle ad blocker', 'CmdOrCtrl+Shift+A', 'adblock'),
+      { type: 'separator' },
+      item('Settings', 'CmdOrCtrl+,', 'settings'), item('Developer tools', 'F12', 'devtools')
+    ]},
+    { label: 'View', submenu: [
+      item('Zoom in', 'CmdOrCtrl+Plus', 'zoom-in'), item('Zoom out', 'CmdOrCtrl+-', 'zoom-out'), item('Actual size', 'CmdOrCtrl+0', 'zoom-reset'),
+      { type: 'separator' },
+      item('Toggle full screen', 'F11', 'fullscreen')
     ]},
     { role: 'editMenu' }
   ];
@@ -1070,6 +1322,36 @@ function setupSession() {
   });
 }
 
+
+// ---------------------------------------------------------------- window state
+const WINDOW_FILE = 'window.json';
+let windowStateTimer = null;
+function initialWindowBounds() {
+  const bounds = { width: 1360, height: 860, startMaximized: windowStart === 'maximized' };
+  if (windowStart !== 'remember') return bounds;
+  const saved = readJson(WINDOW_FILE, null);
+  if (!saved || !Number.isFinite(saved.width) || !Number.isFinite(saved.height)) return bounds;
+  bounds.width = Math.min(Math.max(Math.round(saved.width), 760), 10000);
+  bounds.height = Math.min(Math.max(Math.round(saved.height), 480), 10000);
+  bounds.startMaximized = saved.maximized === true;
+  if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+    const onScreen = screen.getAllDisplays().some(({ workArea: a }) => saved.x < a.x + a.width - 60 && saved.x + bounds.width > a.x + 60 && saved.y >= a.y - 10 && saved.y < a.y + a.height - 60);
+    if (onScreen) { bounds.x = Math.round(saved.x); bounds.y = Math.round(saved.y); }
+  }
+  return bounds;
+}
+function saveWindowState() {
+  clearTimeout(windowStateTimer);
+  if (!win || win.isDestroyed() || win.isMinimized() || win.isFullScreen()) return;
+  const b = win.getNormalBounds();
+  writeJson(WINDOW_FILE, { x: b.x, y: b.y, width: b.width, height: b.height, maximized: win.isMaximized() });
+}
+function scheduleWindowState() {
+  clearTimeout(windowStateTimer);
+  windowStateTimer = setTimeout(saveWindowState, 500);
+  windowStateTimer.unref?.();
+}
+
 async function start() {
   ensureUserDataDirectories();
   const savedBookmarks = readJson('bookmarks.json', []);
@@ -1088,10 +1370,20 @@ async function start() {
   })) : [];
   const settings = readJson(SETTINGS_FILE, {});
   adBlockEnabled = settings.adBlockEnabled !== false;
-  appearance = ['system', 'light', 'dark'].includes(settings.appearance) ? settings.appearance : 'system';
-  colorTheme = ['violet', 'ocean', 'forest', 'rose', 'sunset', 'indigo', 'graphite', 'mint'].includes(settings.colorTheme) ? settings.colorTheme : 'violet';
-  searchEngine = ['duckduckgo', 'google', 'bing', 'brave'].includes(settings.searchEngine) ? settings.searchEngine : 'duckduckgo';
-  restoreSession = settings.restoreSession !== false;
+  appearance = APPEARANCES.includes(settings.appearance) ? settings.appearance : 'system';
+  colorTheme = COLOR_THEME_IDS.includes(settings.colorTheme) ? settings.colorTheme : 'violet';
+  searchEngine = SEARCH_ENGINES.includes(settings.searchEngine) ? settings.searchEngine : 'duckduckgo';
+  // Older builds only had a "Restore previous session" switch.
+  startupMode = STARTUP_MODES.includes(settings.startupMode) ? settings.startupMode : (settings.restoreSession === false ? 'newtab' : 'previous');
+  startupPages = cleanStartupPages(settings.startupPages);
+  homepage = normalizeUrlSetting(settings.homepage);
+  showHomeButton = settings.showHomeButton === true;
+  newTabOpens = NEWTAB_OPEN_MODES.includes(settings.newTabOpens) ? settings.newTabOpens : 'newtab';
+  newTabShortcuts = SHORTCUT_MODES.includes(settings.newTabShortcuts) ? settings.newTabShortcuts : 'smart';
+  newTabClock = settings.newTabClock !== false;
+  windowStart = WINDOW_START_MODES.includes(settings.windowStart) ? settings.windowStart : 'default';
+  launchAtLogin = app.isPackaged && process.platform !== 'linux' ? !!app.getLoginItemSettings().openAtLogin : settings.launchAtLogin === true;
+  applyAppearance();
   showBookmarksBar = settings.showBookmarksBar !== false;
   askWhereToSave = settings.askWhereToSave === true;
   downloadDirectory = typeof settings.downloadDirectory === 'string' && settings.downloadDirectory ? settings.downloadDirectory : app.getPath('downloads');
@@ -1099,47 +1391,28 @@ async function start() {
   downloads = readJson('downloads.json', []);
   if (!Array.isArray(downloads)) downloads = [];
   downloads = downloads.map((entry) => entry && entry.state === 'progressing' ? { ...entry, state: 'interrupted' } : entry).filter(Boolean);
-  extensionDirectories = readJson('extensions.json', []);
-  if (!Array.isArray(extensionDirectories)) extensionDirectories = [];
   allowlistedSites = Array.isArray(settings.allowlistedSites)
     ? [...new Set(settings.allowlistedSites.filter((x) => typeof x === 'string' && /^[a-z0-9.-]+$/i.test(x)).map((x) => x.toLowerCase()))].slice(-300)
     : [];
   setupSession();
-  const restoredExtensionDirectories = [];
-  for (const savedFolder of extensionDirectories.slice()) {
-    let folder = path.resolve(String(savedFolder || ''));
-    try {
-      const manifestPath = path.join(folder, 'manifest.json');
-      if (!fs.existsSync(manifestPath)) continue;
-      if (!isPathInside(EXTENSIONS_DIRECTORY, folder)) {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        const managedFolder = path.join(EXTENSIONS_DIRECTORY, extensionDirectoryName(manifest));
-        fs.cpSync(folder, managedFolder, { recursive: true, errorOnExist: true, force: false, dereference: true });
-        folder = managedFolder;
-      }
-      await session.defaultSession.extensions.loadExtension(folder, { allowFileAccess: false });
-      restoredExtensionDirectories.push(folder);
-    } catch (error) {
-      console.warn('Drift skipped an unavailable extension:', folder, error?.message || error);
-    }
-  }
-  if (JSON.stringify(restoredExtensionDirectories) !== JSON.stringify(extensionDirectories)) {
-    extensionDirectories = restoredExtensionDirectories;
-    writeJson('extensions.json', extensionDirectories);
-  }
+  await extensions.restore();
   buildMenu();
 
+  const windowBounds = initialWindowBounds();
   win = new BaseWindow({
-    width: 1360, height: 860, minWidth: 760, minHeight: 480, title: 'Drift', show: false,
+    ...windowBounds, minWidth: 760, minHeight: 480, title: 'Drift', show: false,
     frame: !IS_WINDOWS, resizable: true, maximizable: true, minimizable: true, closable: true,
-    icon: path.join(__dirname, 'build', 'icon.png'),
+    icon: path.join(ROOT_DIR, 'build', 'icon.png'),
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#11131b' : '#f5f6fa'
   });
   win.setMenuBarVisibility(false);
+  if (windowBounds.startMaximized) win.maximize();
+  nativeTheme.on('updated', () => { if (win && !win.isDestroyed()) win.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#11131b' : '#f5f6fa'); });
 
-  const uiPrefs = { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true };
+  const uiPrefs = { preload: PRELOAD_PATH, contextIsolation: true, sandbox: true };
   ui = new WebContentsView({ webPreferences: uiPrefs });
   ui.setBackgroundColor('#00000000');
+  bindShortcuts(ui.webContents);
   installWebContentsContextMenu(ui.webContents, 'chrome');
   ui.webContents.on('will-navigate', (e) => e.preventDefault());
   ui.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -1147,11 +1420,14 @@ async function start() {
 
   // Ensure local browser chrome is ready before display. The command palette
   // is created only on demand, reducing cold-start work and memory use.
-  await ui.webContents.loadFile(path.join(__dirname, 'ui', 'index.html'));
+  await ui.webContents.loadFile(path.join(RENDERER_DIR, 'browser', 'index.html'));
 
   win.on('resize', layout);
-  win.on('maximize', push);
-  win.on('unmaximize', push);
+  win.on('resize', scheduleWindowState);
+  win.on('move', scheduleWindowState);
+  win.on('maximize', () => { push(); scheduleWindowState(); });
+  win.on('unmaximize', () => { push(); scheduleWindowState(); });
+  win.on('close', saveWindowState);
   win.on('closed', () => {
     saveSessionNow();
     clearTimeout(sessionTimer);
@@ -1160,11 +1436,11 @@ async function start() {
   });
 
   // Restore metadata, but only instantiate the selected tab's WebContents.
-  const saved = restoreSession ? readJson('session.json', null) : null;
+  const saved = startupMode === 'previous' ? readJson('session.json', null) : null;
   // Migrate both the new flat session format and the legacy three-space format.
   const restored = Array.isArray(saved?.tabs) ? saved.tabs : (saved?.spaces || []).flatMap((space) => space.tabs || []);
   for (const t of restored) {
-    const url = !t.url || isNewTabUrl(t.url) || t.url.endsWith('/ui/newtab.html') ? newTabUrl() : t.url;
+    const url = !t.url || isNewTabUrl(t.url) || /\/(?:ui|renderer\/newtab)\/newtab\.html$/.test(t.url) ? newTabUrl() : t.url;
     cur.tabs.push({ id: nextId++, title: t.title || 'New tab', url, favicon: t.favicon || '', loading: false, lastActive: Date.now(), view: null });
   }
   if (Array.isArray(saved?.tabs)) cur.active = cur.tabs[saved.active] || cur.tabs[0] || null;
@@ -1177,11 +1453,19 @@ async function start() {
     cur.active = cur.tabs[activeIndex] || cur.tabs[0] || null;
   }
 
+  if (!cur.tabs.length) {
+    // "Open specific pages" / "Open the home page", or a fresh New Tab page when nothing was restored.
+    const pages = startupMode === 'specific' ? startupPages : (startupMode === 'homepage' && homepage ? [homepage] : []);
+    for (const url of pages) cur.tabs.push({ id: nextId++, title: hostnameOf(url) || 'New tab', url, favicon: '', loading: false, lastActive: Date.now(), view: null });
+    if (!cur.tabs.length) cur.tabs.push({ id: nextId++, title: 'New tab', url: newTabUrl(), favicon: '', loading: false, lastActive: Date.now(), view: null });
+    cur.active = cur.tabs[0];
+  }
+
   layout();
   if (cur.tabs.length) {
     const initialTab = cur.active || cur.tabs[0];
     activateTab(initialTab);
-    if (isNewTabUrl(initialTab.url)) focusAddress();
+    if (isNewTabUrl(initialTab.url)) focusNewTab(initialTab);
   } else createTab();
   win.show();
   const discardTimer = setInterval(discardIdleTabs, 60 * 1000);

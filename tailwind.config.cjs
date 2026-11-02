@@ -1,6 +1,6 @@
 /** Tailwind utilities for Drift's local, offline-first Electron chrome. */
 module.exports = {
-  content: ['./ui/**/*.html', './ui/**/*.js'],
+  content: ['./src/renderer/**/*.html', './src/renderer/**/*.js'],
   theme: {
     extend: {
       colors: {

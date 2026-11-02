@@ -1,16 +1,19 @@
 {
   "name": "drift",
-  "version": "1.2.2",
-  "description": "Drift — a fast, cross-platform browser with a streamlined tab strip, persistent bookmarks, privacy protection, downloads, extensions, history, configurable settings, color themes, and context menus.",
-  "main": "main.js",
+  "version": "1.3.0",
+  "description": "Drift \u2014 a fast, cross-platform browser with a streamlined tab strip, persistent bookmarks, privacy protection, downloads, Chrome-compatible extensions, history, configurable settings, color themes, and context menus.",
+  "main": "src/main/main.js",
   "license": "MIT",
   "author": "Drift contributors",
   "scripts": {
-    "css:build": "tailwindcss -c tailwind.config.cjs -i ./ui/tailwind.css -o ./ui/tailwind.generated.css --minify",
     "start": "electron .",
+    "css:build": "tailwindcss -c tailwind.config.cjs -i ./src/renderer/shared/tailwind.css -o ./src/renderer/shared/tailwind.generated.css --minify",
     "predist": "npm run css:build",
     "dist": "electron-builder",
     "dist:win": "npm run css:build && electron-builder --win nsis"
+  },
+  "dependencies": {
+    "electron-chrome-web-store": "^0.13.0"
   },
   "devDependencies": {
     "electron": "^45.0.0",
@@ -21,11 +24,8 @@
     "appId": "org.drift.browser",
     "productName": "Drift",
     "files": [
-      "main.js",
-      "preload.js",
-      "ui/**/*",
+      "src/**/*",
       "build/**/*",
-      "tailwind.config.cjs",
       "package.json"
     ],
     "win": {

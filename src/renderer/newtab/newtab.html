@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'">
+<meta name="color-scheme" content="dark light">
+<title>New tab — Drift</title>
+<link rel="stylesheet" href="newtab.css">
+</head>
+<body>
+  <div class="backdrop" aria-hidden="true"></div>
+  <main class="page">
+    <header class="topbar">
+      <div class="brand"><img src="../shared/assets/drift-mark.svg" alt=""><span>Drift</span></div>
+      <div class="clock" id="clock-wrap" aria-live="off"><div class="clock-time" id="clock"></div><div class="clock-day" id="day"></div></div>
+    </header>
+
+    <div class="content">
+      <section class="hero">
+        <p class="greeting" id="greeting"></p>
+        <h1>Find your flow.</h1>
+        <p class="tagline">A quieter, faster way to move around the web.</p>
+
+        <form id="f" class="search" autocomplete="off" role="search">
+          <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="7.5"/><path d="m16.4 16.4 4.2 4.2"/></svg>
+          <input id="q" type="text" placeholder="Search or enter a website address" autofocus spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="suggest" aria-expanded="false" aria-label="Search or enter a website address">
+          <button type="button" id="engine-btn" class="engine" aria-haspopup="listbox" aria-expanded="false" aria-controls="engine-menu" title="Choose search engine"><span id="engine-name">DuckDuckGo</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+          <button class="go" type="submit" aria-label="Search"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 5l7 7-7 7"/></svg></button>
+          <ul id="suggest" class="popover suggest" role="listbox" hidden></ul>
+          <ul id="engine-menu" class="popover engine-menu" role="listbox" aria-label="Search engine" hidden></ul>
+        </form>
+      </section>
+
+      <section class="shortcuts" id="shortcuts" aria-label="Shortcuts">
+        <div class="section-head"><h2 id="sc-title">Quick access</h2><span class="section-hint" id="sc-hint"></span></div>
+        <div class="tiles" id="tiles"></div>
+      </section>
+    </div>
+
+    <footer class="hints" aria-label="Keyboard shortcuts">
+      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>K</kbd>Command palette</span>
+      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>T</kbd>New tab</span>
+      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>L</kbd>Address bar</span>
+      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>D</kbd>Bookmark page</span>
+    </footer>
+  </main>
+
+  <dialog id="pin-dialog" class="pin-dialog" aria-labelledby="pin-title">
+    <form id="pin-form" method="dialog" autocomplete="off">
+      <h3 id="pin-title">Add shortcut</h3>
+      <label>Name<input id="pin-name" type="text" maxlength="40" placeholder="Optional" spellcheck="false"></label>
+      <label>Address<input id="pin-url" type="text" placeholder="example.com" spellcheck="false" required></label>
+      <p id="pin-error" class="pin-error" role="alert" hidden>Enter a valid website address.</p>
+      <div class="pin-actions"><button type="button" id="pin-cancel" class="btn">Cancel</button><button type="submit" class="btn primary">Add</button></div>
+    </form>
+  </dialog>
+<script src="newtab.js"></script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # Drift
 
-Drift **v1.2.2** is a small, cross-platform browser for **Windows, macOS, and Linux**, built with Electron and a local HTML/CSS/JavaScript interface. Windows uses a custom frameless titlebar with native-feeling minimize, maximize/restore, and close controls. It keeps the browser chrome lightweight, restores session metadata, and opens tab contents only when needed.
+Drift **v1.3.0** is a small, cross-platform browser for **Windows, macOS, and Linux**, built with Electron and a local HTML/CSS/JavaScript interface. Windows uses a custom frameless titlebar with native-feeling minimize, maximize/restore, and close controls. It keeps the browser chrome lightweight, restores session metadata, and opens tab contents only when needed.
 
 ## Highlights
 
@@ -12,10 +12,14 @@ Drift **v1.2.2** is a small, cross-platform browser for **Windows, macOS, and Li
 - **Performance-minded tab handling** — lazy tab creation, idle-tab discarding, background timer throttling, debounced chrome updates, session restore without eagerly loading every saved page, and manager datasets sent over IPC only while their respective manager page is open.
 - **Per-user Windows installation** — the installer places application binaries in `%LOCALAPPDATA%\Programs\Drift` without requiring administrator rights. The browser profile, settings, bookmarks, history, session, and managed extensions live in `%APPDATA%\Drift`.
 - **Downloads manager** with progress, pause/resume/cancel, open file, show in folder, and configurable save location.
-- **Extensions manager** for loading/removing unpacked Chromium extension folders. Extension folders are copied into the Drift AppData profile and restored on the next launch, so they do not depend on the original extraction directory.
+- **Chrome-compatible extensions** — install from the **Chrome Web Store** by pasting a store link or extension ID (or by clicking *Add to Chrome* on chromewebstore.google.com inside Drift), with automatic updates. Unpacked Chromium extension folders are still supported and are copied into the Drift AppData profile so they do not depend on the original folder.
 - **Command palette** (`Ctrl/Cmd+K`) for open tabs, bookmarks, history, URLs, and common commands.
 - **Dedicated settings page** with General, Appearance, Search, Privacy & Security, Downloads, and About sections; preferences save automatically.
+- **Light, dark, or system appearance** with a visual picker. *System* follows your OS live; the choice also drives `prefers-color-scheme`, so websites that support dark mode follow it. Each of the eight accent themes has a tuned light-mode palette.
 - **Eight selectable browser color themes** (Violet, Ocean, Forest, Rose, Sunset, Indigo, Graphite, and Mint), persisted in the AppData profile and reflected on the new-tab page.
+- **Full startup control** (*Settings → General*): open the New Tab page, continue where you left off, open a set of specific pages (up to 12, with a *Use open tabs* shortcut), or open your home page. Also: home page + optional Home button, window size on startup (default / maximized / remember last size and position), and launch at login (Windows/macOS, packaged builds).
+- **New tab options** (*Settings → New tab*): new tabs can open the New Tab page, your home page, or a blank page; shortcuts can show most-visited sites or recent bookmarks (or be hidden); the clock can be turned off.
+- **Redesigned New Tab page** with a time-aware greeting, a search box with an engine switcher and live suggestions (from your shortcuts and bookmarks), a most-visited / bookmarks grid, pinnable custom shortcuts, and keyboard hints. Type anywhere on the page to start searching.
 - **Context-aware right-click menus** for tabs, bookmarks, web links, images, selected text, editable fields, and general page content. Tab menus include duplicate, reload, close, close other tabs, and close tabs to the right.
 - **Polished motion and transitions** across browser tabs, controls, internal settings/manager pages, theme changes, the new-tab surface, and context menus; respects the operating system’s reduced-motion preference.
 - **Find in page** with match count, next/previous navigation, and case matching; plus reader mode, persistent visit history, and light/dark appearance following the OS setting.
@@ -24,26 +28,34 @@ Drift **v1.2.2** is a small, cross-platform browser for **Windows, macOS, and Li
 
 ## Shortcuts
 
+Shortcuts work from any surface (page, address bar, command palette, internal pages). On macOS use Cmd instead of Ctrl.
+
 | Action | Shortcut |
 |---|---|
-| Command palette | Ctrl/Cmd + K |
-| Settings | Ctrl/Cmd + , |
-| New tab / Close tab | Ctrl/Cmd + T / W |
-| Address bar | Ctrl/Cmd + L |
-| Bookmark page | Ctrl/Cmd + D |
-| Bookmarks manager | Ctrl/Cmd + Shift + B |
-| History | Ctrl/Cmd + H |
-| Downloads | Ctrl/Cmd + J |
-| Extensions | Ctrl/Cmd + Shift + E |
-| Find in page | Ctrl/Cmd + F |
-| Toggle ad blocker | Ctrl/Cmd + Shift + A |
-| Reload | Ctrl/Cmd + R |
-| Back / Forward | Alt + Left / Right (Cmd + [ / ] on Mac) |
-| Reader mode | Ctrl/Cmd + Shift + R |
-| Developer tools | F12 |
-| Next / Previous tab | Ctrl + Tab / Ctrl + Shift + Tab |
+| New tab / Close tab | Ctrl + T / W |
+| **Reopen closed tab** (up to 25) | Ctrl + Shift + T |
+| Next / Previous tab | Ctrl + Tab, Ctrl + PageDown / Ctrl + Shift + Tab, Ctrl + PageUp |
+| Jump to tab 1–8 / last tab | Ctrl + 1…8 / Ctrl + 9 |
+| Close window | Ctrl + Shift + W |
+| Command palette | Ctrl + K |
+| Address bar | Ctrl + L, Alt + D, F6 |
+| Back / Forward / Home | Alt + Left / Alt + Right / Alt + Home (Cmd + [ / ] on Mac) |
+| Reload / Hard reload | Ctrl + R, F5 / Ctrl + F5, Shift + F5 |
+| Find in page / Next / Previous | Ctrl + F / Ctrl + G / Ctrl + Shift + G |
+| Zoom in / out / reset | Ctrl + = (or +) / Ctrl + - / Ctrl + 0 (also Ctrl + mouse wheel) |
+| Print | Ctrl + P |
+| Bookmark page | Ctrl + D |
+| Bookmarks manager | Ctrl + Shift + B (or O) |
+| History / Clear browsing data page | Ctrl + H / Ctrl + Shift + Delete |
+| Downloads | Ctrl + J |
+| Extensions | Ctrl + Shift + E |
+| Settings | Ctrl + , |
+| Reader mode | Ctrl + Shift + R |
+| Toggle ad blocker | Ctrl + Shift + A |
+| Developer tools | F12, Ctrl + Shift + I |
+| Full screen | F11 |
 
-Middle-click a tab to close it.
+Middle-click a tab to close it. Drift is a single-window browser, so New window / Incognito shortcuts are not included.
 
 ## Run from source
 
@@ -60,8 +72,8 @@ npm start
 
 Build each target on its corresponding operating system:
 
-- **Windows:** run `build_publish.bat` — outputs `dist/Drift-Setup.exe`, a per-user installer.
-- **macOS / Linux:** run `./build_publish.sh` — outputs a `.dmg` or `.AppImage`.
+- **Windows:** run `scripts\build_publish.bat` — outputs `dist/Drift-Setup.exe`, a per-user installer.
+- **macOS / Linux:** run `./scripts/build_publish.sh` — outputs a `.dmg` or `.AppImage`.
 
 The project includes custom source and platform-specific icons in `build/`.
 
@@ -70,21 +82,34 @@ The Windows installer is intentionally not a portable self-extracting executable
 ## Project layout
 
 ```text
-main.js                 browser core, AppData profile initialization, tabs, downloads, managed extensions, request blocking and preferences
-preload.js              allow-listed renderer/main IPC bridge
-ui/index.html           unified tab strip, address bar, internal settings/managers, find bar, and privacy dialog
-ui/ui.js                tab strip, settings, bookmarks, history, downloads, extensions, find-in-page, and protection UI
-ui/style.css            color themes, transitions, context menus, and component styling
-ui/tailwind.css         Tailwind build entry point
-ui/tailwind.generated.css compiled utility CSS (rebuilt by npm scripts)
-ui/palette.*            command palette
-ui/newtab.html          local start page
-build/icon.*            custom platform app icons
+package.json, package-lock.json, tailwind.config.cjs, LICENSE, README.md
+build/                       app icons (icon.ico / icon.icns / icon.png / icon.svg)
+scripts/
+  build_publish.bat          Windows per-user installer build
+  build_publish.sh           macOS / Linux build
+src/
+  main/
+    main.js                  browser core: profile init, tabs, downloads, request blocking, preferences, IPC
+    shortcuts.js             keyboard shortcut table (handled on every surface)
+    extensions.js            Chrome Web Store + unpacked extension manager
+    extension-info.js        names, icons and readable permissions for the Add extension dialog
+  preload/
+    preload.js               allow-listed renderer/main IPC bridge
+  renderer/
+    browser/                 index.html + ui.js — tab strip, address bar, settings and manager pages
+    newtab/                  local start page
+    palette/                 command palette
+    shared/                  style.css, Tailwind entry/output, assets/
 ```
 
-## Extensions note
+## Extensions
 
-Electron supports only a subset of the Chrome Extensions API. Drift loads unpacked extension folders that contain `manifest.json`; Chrome Web Store installation and automatic extension updates are not provided by this build. Extension compatibility depends on the APIs used by each extension. See the [Electron extension API documentation](https://www.electronjs.org/docs/latest/api/extensions-api).
+Drift uses Chromium through Electron, so it runs Chrome extensions:
+
+- **Chrome Web Store** — open *Extensions* (`Ctrl/Cmd+Shift+E`), paste a Web Store link or the 32-letter extension ID, and press *Add from Chrome Web Store*. You can also browse chromewebstore.google.com in a tab and use *Add to Chrome*. Installs open a themed confirmation dialog listing what the extension can access, only Manifest V3 extensions are accepted from the store, and installed extensions update automatically. Powered by [`electron-chrome-web-store`](https://www.npmjs.com/package/electron-chrome-web-store) (MIT).
+- **Unpacked folders** — *Install unpacked* copies a folder containing `manifest.json` (Manifest V2 or V3) into the Drift profile.
+
+Electron implements only a subset of the Chrome Extensions API, so compatibility depends on the APIs each extension uses. See the [Electron extension API documentation](https://www.electronjs.org/docs/latest/api/extensions-api). Profile data lives in `Extensions/` (unpacked) and `ChromeWebStore/` (store installs) under the Drift AppData directory.
 
 ## Notes
 

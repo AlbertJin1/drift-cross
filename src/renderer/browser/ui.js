@@ -2,8 +2,8 @@ const $ = (id) => document.getElementById(id);
 let state = {
   tabs: [], url: '', internalPage: '', bookmarks: [], history: [], downloads: [], extensions: [],
   blockedHosts: [], blocked: 0, adBlockEnabled: true,
-  settings: { appearance: 'system', colorTheme: 'violet', searchEngine: 'duckduckgo', restoreSession: true, showBookmarksBar: true, askWhereToSave: false },
-  version: '1.2.2', find: { visible: false, activeMatchOrdinal: 0, matches: 0 }
+  settings: { appearance: 'system', colorTheme: 'violet', searchEngine: 'duckduckgo', startupMode: 'previous', startupPages: [], homepage: '', showHomeButton: false, newTabOpens: 'newtab', newTabShortcuts: 'smart', newTabClock: true, windowStart: 'default', launchAtLogin: false, showBookmarksBar: true, askWhereToSave: false },
+  version: '1.3.0', find: { visible: false, activeMatchOrdinal: 0, matches: 0 }
 };
 document.body.classList.toggle('is-windows', drift.platform === 'win32');
 const tabEls = new Map();
@@ -15,6 +15,8 @@ let bookmarkFolderFilter = '';
 let historyFilter = '';
 let lastPageRenderKey = '';
 let contextTarget = null;
+const systemLight = window.matchMedia('(prefers-color-scheme: light)');
+systemLight.addEventListener('change', () => applySettings());
 const COLOR_THEMES = [
   { id: 'violet', name: 'Violet', primary: '#a58bff', secondary: '#61e3dc' },
   { id: 'ocean', name: 'Ocean', primary: '#67c9ef', secondary: '#54e6d3' },
@@ -160,15 +162,17 @@ function renderProtection() {
 
 function applySettings() {
   const preferences = state.settings || {};
-  const theme = ['system', 'light', 'dark'].includes(preferences.appearance) ? preferences.appearance : 'system';
-  if (theme === 'system') delete document.documentElement.dataset.theme;
-  else document.documentElement.dataset.theme = theme;
+  const mode = ['system', 'light', 'dark'].includes(preferences.appearance) ? preferences.appearance : 'system';
+  // Always resolve to a concrete light/dark so every theme palette applies, and keep following the OS in "system" mode.
+  document.documentElement.dataset.themeMode = mode;
+  document.documentElement.dataset.theme = mode === 'system' ? (systemLight.matches ? 'light' : 'dark') : mode;
+  $('home')?.classList.toggle('hidden', preferences.showHomeButton !== true);
   const colorTheme = COLOR_THEMES.some((item) => item.id === preferences.colorTheme) ? preferences.colorTheme : 'violet';
   document.documentElement.dataset.colorTheme = colorTheme;
   document.body.classList.toggle('hide-bookmarks', preferences.showBookmarksBar === false);
   const isWindows = drift.platform === 'win32';
   document.documentElement.style.setProperty('--chrome-height', `${preferences.showBookmarksBar === false ? 82 : 108}px`);
-  if ($('window-version')) $('window-version').textContent = (state.version || '1.2.2').split('.').slice(0, 2).join('.');
+  if ($('window-version')) $('window-version').textContent = (state.version || '1.3.0').split('.').slice(0, 2).join('.');
   if ($('win-maximize')) {
     $('win-maximize').innerHTML = state.isMaximized
       ? '<svg viewBox="0 0 24 24"><path d="M8 8V5h11v11h-3M5 8h11v11H5z"/></svg>'
@@ -188,20 +192,81 @@ function selectSetting(id, value, options) {
 function switchSetting(id, checked) {
   return `<label class="switch-wrap page-switch"><input id="${id}" type="checkbox" ${checked ? 'checked' : ''}><span class="switch-track"></span></label>`;
 }
+const STARTUP_OPTIONS = [
+  ['newtab', 'Open the New Tab page', 'Start fresh with a clean tab.', '<svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M12 9.5v5M9.5 12h5"/></svg>'],
+  ['previous', 'Continue where you left off', 'Reopen the tabs from your last session.', '<svg viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3.5 8.5"/><path d="M3.5 3.5v5h5M12 7.8V12l3 1.8"/></svg>'],
+  ['specific', 'Open specific pages', 'Always start with the pages you choose.', '<svg viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>'],
+  ['homepage', 'Open your home page', 'Start on a single page you pick below.', '<svg viewBox="0 0 24 24"><path d="M3.5 11.2 12 4l8.5 7.2"/><path d="M5.8 9.8V20h12.4V9.8"/><path d="M10 20v-5.5h4V20"/></svg>']
+];
+function looksLikeUrl(value) {
+  const text = String(value || '').trim();
+  if (!text || /\s/.test(text)) return false;
+  return /^about:blank$/i.test(text) || /^https?:\/\/[^/]+/i.test(text) || /^localhost(?::\d+)?(?:[/?#]|$)/i.test(text) || /^[^/\s]+\.[^/\s.]{2,}(?::\d+)?(?:[/?#]|$)/.test(text);
+}
+function startupOptionsMarkup(prefs) {
+  const mode = STARTUP_OPTIONS.some(([id]) => id === prefs.startupMode) ? prefs.startupMode : 'previous';
+  const pages = Array.isArray(prefs.startupPages) ? prefs.startupPages : [];
+  const cards = STARTUP_OPTIONS.map(([id, title, hint, icon]) => {
+    const detail = id === 'homepage'
+      ? (prefs.homepage ? `Opens ${escapeHtml(prefs.homepage)}` : 'No home page set — the New Tab page will open. Set one under “Home page” below.')
+      : (id === 'specific' && mode === 'specific' ? `${pages.length} page${pages.length === 1 ? '' : 's'} saved` : hint);
+    return `<label class="choice-card ${mode === id ? 'selected' : ''}"><input type="radio" name="startup-mode" value="${id}" ${mode === id ? 'checked' : ''}><span class="choice-icon">${icon}</span><span class="choice-copy"><strong>${title}</strong><small>${detail}</small></span><span class="choice-radio" aria-hidden="true"></span></label>`;
+  }).join('');
+  const editor = mode !== 'specific' ? '' : `
+    <div class="startup-pages">
+      <div class="startup-pages-head"><div><strong>Pages to open</strong><small>Up to 12 pages, opened in order as tabs.</small></div><button type="button" class="small-action" data-action="startup-use-open-tabs">Use open tabs</button></div>
+      ${pages.length ? `<ul class="startup-page-list">${pages.map((url, index) => {
+        let host = ''; try { host = new URL(url).hostname.replace(/^www\./, ''); } catch { /* ignore */ }
+        return `<li><span class="startup-page-mark">${escapeHtml((host || url).charAt(0).toUpperCase())}</span><span class="startup-page-url" title="${escapeHtml(url)}">${escapeHtml(url)}</span><button type="button" class="icon sm" data-action="remove-startup-page" data-index="${index}" title="Remove" aria-label="Remove ${escapeHtml(host || url)}">${X_SVG}</button></li>`;
+      }).join('')}</ul>` : '<p class="startup-empty">No pages yet — Drift will open the New Tab page until you add one.</p>'}
+      ${pages.length >= 12 ? '' : '<form id="startup-add-form" class="startup-add" autocomplete="off"><input id="startup-add-input" class="page-input" type="text" placeholder="Add a page, e.g. github.com" spellcheck="false" aria-label="Page address"><button type="submit" class="primary-button">Add page</button></form>'}
+    </div>`;
+  return `<div class="choice-list" role="radiogroup" aria-label="When Drift starts">${cards}</div>${editor}`;
+}
+function modePickerMarkup(current) {
+  const pane = (kind) => `<span class="mp-pane mp-${kind}"><i></i><i></i><i></i></span>`;
+  const modes = [
+    ['system', 'System', 'Match your device', pane('light') + pane('dark')],
+    ['light', 'Light', 'Bright and clear', pane('light')],
+    ['dark', 'Dark', 'Easy on the eyes', pane('dark')]
+  ];
+  return `<div class="mode-picker" role="radiogroup" aria-label="Interface mode">${modes.map(([id, name, hint, preview]) => `<label class="mode-option ${current === id ? 'selected' : ''}"><input type="radio" name="appearance-mode" value="${id}" ${current === id ? 'checked' : ''}><span class="mode-preview">${preview}</span><span class="mode-name">${name}</span><small>${hint}</small></label>`).join('')}</div>`;
+}
 function renderSettingsContent() {
   const prefs = state.settings || {};
   const sections = {
     general: {
-      title: 'General', intro: 'Control how Drift starts and behaves.', body: [
-        settingRow('Restore previous session', 'Reopen the tabs you had open the last time you used Drift.', switchSetting('restore-session-setting', prefs.restoreSession !== false))
-      ].join('')
+      title: 'General', intro: 'Control how Drift starts and behaves.', cards: [
+        ['When Drift starts', 'Choose what you see each time you open the browser.', startupOptionsMarkup(prefs), 'startup-card'],
+        ['Home page', 'Used by the Home button and the “home page” options.', [
+          settingRow('Home page address', 'Leave empty to use the New Tab page.', `<input id="homepage-setting" class="page-input" type="text" value="${escapeHtml(prefs.homepage || '')}" placeholder="New Tab page" spellcheck="false" autocomplete="off" aria-label="Home page address">`),
+          settingRow('Show Home button', 'Add a Home button next to Reload.', switchSetting('show-home-setting', prefs.showHomeButton === true))
+        ].join('')],
+        ['Window and system', 'How the Drift window appears when it opens.', [
+          settingRow('Window on startup', 'Pick the size Drift opens at.', selectSetting('window-start-setting', prefs.windowStart || 'default', [['default', 'Default size'], ['maximized', 'Maximized'], ['remember', 'Remember last size and position']])),
+          state.canLaunchAtLogin === false ? '' : settingRow('Launch Drift when you sign in', 'Start the browser automatically when your computer starts.', switchSetting('launch-login-setting', prefs.launchAtLogin === true))
+        ].join('')]
+      ]
     },
     appearance: {
-      title: 'Appearance', intro: 'Make the browser chrome comfortable to use.', body: [
-        settingRow('Interface mode', 'Choose light, dark, or follow your operating system.', selectSetting('theme-setting', prefs.appearance || 'system', [['system', 'Follow system'], ['light', 'Light'], ['dark', 'Dark']])),
-        `<div class="theme-picker-block"><div class="theme-picker-heading"><strong>Browser color theme</strong><small>Choose an accent palette for tabs, controls, highlights, and browser pages.</small></div><div class="theme-grid">${COLOR_THEMES.map((theme) => `<button type="button" class="theme-option ${((prefs.colorTheme || 'violet') === theme.id) ? 'selected' : ''}" data-color-theme="${theme.id}" aria-pressed="${(prefs.colorTheme || 'violet') === theme.id}" title="${theme.name} theme"><span class="theme-preview theme-preview-${theme.id}"><i></i><i></i><i></i></span><span class="theme-option-name">${theme.name}</span>${(prefs.colorTheme || 'violet') === theme.id ? '<span class="theme-check">✓</span>' : ''}</button>`).join('')}</div></div>`,
-        settingRow('Bookmarks bar', 'Keep favorite websites one click below the address bar.', switchSetting('show-bookmarks-setting', prefs.showBookmarksBar !== false))
-      ].join('')
+      title: 'Appearance', intro: 'Make the browser comfortable to use, day or night.', cards: [
+        ['Interface mode', 'Light, dark, or follow your operating system automatically.', modePickerMarkup(prefs.appearance || 'system'), 'mode-card'],
+        ['Color theme', 'An accent palette for tabs, controls, highlights, and browser pages.',
+          `<div class="theme-picker-block"><div class="theme-grid">${COLOR_THEMES.map((theme) => `<button type="button" class="theme-option ${((prefs.colorTheme || 'violet') === theme.id) ? 'selected' : ''}" data-color-theme="${theme.id}" aria-pressed="${(prefs.colorTheme || 'violet') === theme.id}" title="${theme.name} theme"><span class="theme-preview theme-preview-${theme.id}"><i></i><i></i><i></i></span><span class="theme-option-name">${theme.name}</span>${(prefs.colorTheme || 'violet') === theme.id ? '<span class="theme-check">✓</span>' : ''}</button>`).join('')}</div></div>`],
+        ['Toolbar', '', settingRow('Bookmarks bar', 'Keep favorite websites one click below the address bar.', switchSetting('show-bookmarks-setting', prefs.showBookmarksBar !== false))]
+      ]
+    },
+    newtab: {
+      title: 'New tab', intro: 'Shape what opens when you start a new tab.', cards: [
+        ['New tab behavior', '', [
+          settingRow('New tabs open with', 'What appears when you press Ctrl+T or the + button.', selectSetting('newtab-opens-setting', prefs.newTabOpens || 'newtab', [['newtab', 'New Tab page'], ['homepage', 'Home page'], ['blank', 'Blank page']])),
+          (prefs.newTabOpens === 'homepage' && !prefs.homepage) ? `<div class="setting-note">No home page is set, so new tabs will show the New Tab page. <button class="link-action" data-setting-section-link="general">Set a home page</button></div>` : ''
+        ].join('')],
+        ['New Tab page', 'Applies when the New Tab page is shown.', [
+          settingRow('Shortcuts', 'Which sites appear under the search box.', selectSetting('newtab-shortcuts-setting', prefs.newTabShortcuts || 'smart', [['smart', 'Most visited sites'], ['bookmarks', 'Recent bookmarks'], ['hidden', 'Hidden']])),
+          settingRow('Show date and time', 'Display the clock and date at the top of the page.', switchSetting('newtab-clock-setting', prefs.newTabClock !== false))
+        ].join('')]
+      ]
     },
     search: {
       title: 'Search engine', intro: 'Choose the provider used for address-bar searches.', body: [
@@ -211,6 +276,7 @@ function renderSettingsContent() {
     privacy: {
       title: 'Privacy and security', intro: 'Manage built-in protection and site exceptions.', body: [
         settingRow('Block ads and trackers', 'Filter a bundled list of common advertising and analytics hosts.', switchSetting('settings-adblock', state.adBlockEnabled !== false)),
+        `<div class="settings-inline-card"><div><strong>Clear browsing data</strong><small>Delete history, cookies, cached files and more for a chosen time range.</small></div><button class="small-action" data-action="clear-data">Clear data…</button></div>`,
         `<div class="settings-inline-card"><div><strong>Site exceptions and activity</strong><small>${Number(state.blocked || 0).toLocaleString()} requests blocked this session</small></div><button class="small-action" data-action="open-protection">Manage protection</button></div>`
       ].join('')
     },
@@ -222,15 +288,18 @@ function renderSettingsContent() {
     },
     about: {
       title: 'About Drift', intro: 'Browser build and runtime information.', body: `
-        <div class="about-page-card"><img src="assets/drift-mark.svg" alt=""><div><strong>Drift ${escapeHtml(state.version || '1.2.2')}</strong><small>A focused browser built for fast, comfortable browsing.</small><small>Electron ${escapeHtml(state.electronVersion || '—')} · Chromium ${escapeHtml(state.chromiumVersion || '—')}</small></div><span class="version-status">Installed build</span></div>
+        <div class="about-page-card"><img src="../shared/assets/drift-mark.svg" alt=""><div><strong>Drift ${escapeHtml(state.version || '1.3.0')}</strong><small>A focused browser built for fast, comfortable browsing.</small><small>Electron ${escapeHtml(state.electronVersion || '—')} · Chromium ${escapeHtml(state.chromiumVersion || '—')}</small></div><span class="version-status">Installed build</span></div>
         <div class="settings-inline-card profile-location-card"><div><strong>Browser profile location</strong><small class="profile-path">${escapeHtml(state.profileDirectory || 'AppData/Drift')}</small><small>Settings, bookmarks, history, session data, and installed extensions are stored here.</small></div><button class="small-action" data-action="open-profile-folder">Open folder</button></div>
         <p class="page-muted-copy">Drift uses the Chromium engine through Electron. Extensions are copied into your Drift profile so they remain available after the original folder is moved.</p>`
     }
   };
   const section = sections[currentSettingsSection] || sections.general;
+  const body = section.cards
+    ? section.cards.map(([title, hint, html, cls = '']) => `<section class="settings-group"><div class="group-head"><h2 class="group-title">${title}</h2>${hint ? `<p>${hint}</p>` : ''}</div><div class="page-card settings-card ${cls}">${html}</div></section>`).join('')
+    : `<div class="page-card settings-card">${section.body}</div>`;
   $('page-main').innerHTML = `
     <div class="page-heading"><div><span class="eyebrow">PREFERENCES</span><h1>${section.title}</h1><p>${section.intro}</p></div></div>
-    <div class="page-card settings-card">${section.body}</div>
+    ${body}
     <div class="page-footnote">Settings are saved automatically on this device.</div>`;
 }
 function renderBookmarksPage() {
@@ -277,10 +346,10 @@ function renderDownloadsPage() {
 function renderExtensionsPage() {
   const extensions = state.extensions || [];
   $('page-main').innerHTML = `
-    <div class="page-heading page-heading-row"><div><span class="eyebrow">BROWSER TOOLS</span><h1>Extensions</h1><p>Add tools to customize your browsing experience.</p></div><button class="primary-button" data-action="install-extension">＋ Install unpacked</button></div>
-    <div class="extension-notice"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7h.01"/></svg><span>This build supports unpacked Chromium extensions installed from a local folder. Select a folder containing <code>manifest.json</code>. Chrome Web Store installation and automatic extension updates are not included.</span></div>
+    <div class="page-heading page-heading-row"><div><span class="eyebrow">BROWSER TOOLS</span><h1>Extensions</h1><p>Add Chrome-compatible extensions to customize your browsing experience.</p></div><div class="manager-actions"><button class="small-action" data-action="browse-web-store">Browse Web Store</button><button class="small-action" data-action="install-extension">＋ Install unpacked</button><button class="primary-button" data-action="open-store-dialog">Add from Chrome Web Store</button></div></div>
+    <div class="extension-notice"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7h.01"/></svg><span>Drift installs extensions from the Chrome Web Store (updated automatically) or from an unpacked folder containing <code>manifest.json</code>. Manifest V3 extensions are supported from the store; Electron implements only part of the Chrome extension API, so some extensions may not work fully.</span></div>
     <div class="page-card manager-card">${extensions.length ? extensions.map((extension) => `
-      <div class="manager-row extension-row"><div class="extension-mark">${escapeHtml((extension.name || 'E').charAt(0).toUpperCase())}</div><div class="manager-fields"><strong>${escapeHtml(extension.name)}</strong><span class="manager-url-text">${escapeHtml(extension.description || 'No description provided.')}</span><div class="manager-meta"><span>Version ${escapeHtml(extension.version || '—')}</span><span>${escapeHtml(extension.id || '')}</span></div></div><div class="manager-actions"><button class="small-action remove-action" data-action="remove-extension" data-id="${escapeHtml(extension.id)}">Remove</button></div></div>`).join('') : `<div class="empty-state"><div class="empty-state-icon">◇</div><strong>No extensions installed</strong><span>Install an unpacked extension folder to add browser features.</span></div>`}</div>
+      <div class="manager-row extension-row"><div class="extension-mark">${escapeHtml((extension.name || 'E').charAt(0).toUpperCase())}</div><div class="manager-fields"><strong>${escapeHtml(extension.name)}</strong><span class="manager-url-text">${escapeHtml(extension.description || 'No description provided.')}</span><div class="manager-meta"><span>Version ${escapeHtml(extension.version || '—')}</span><span>${extension.source === 'chrome-web-store' ? 'Chrome Web Store' : 'Unpacked'}</span><span>${escapeHtml(extension.id || '')}</span></div></div><div class="manager-actions"><button class="small-action remove-action" data-action="remove-extension" data-id="${escapeHtml(extension.id)}">Remove</button></div></div>`).join('') : `<div class="empty-state"><div class="empty-state-icon">◇</div><strong>No extensions installed</strong><span>Add one from the Chrome Web Store or install an unpacked extension folder.</span></div>`}</div>
     <div class="page-footnote">Only install extensions from sources you trust. Extensions may be able to read and modify website data according to their permissions.</div>`;
 }
 function pageNavigation() {
@@ -292,21 +361,22 @@ function pageNavigation() {
     extensions: '<svg viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v4h3a2 2 0 1 1 0 4H3v4a2 2 0 0 0 2 2h4v-3a3 3 0 1 1 6 0v3h3a2 2 0 0 0 2-2v-4h-3a2 2 0 1 1 0-4h3V5a2 2 0 0 0-2-2h-4v3a3 3 0 1 1-6 0z"/></svg>',
     general: '<svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg>',
     appearance: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z"/></svg>',
+    newtab: '<svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M3.5 9.5h17M12 12.2v4.6M9.7 14.5h4.6"/></svg>',
     search: '<svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="7.3"/><path d="m16.2 16.2 4.3 4.3"/></svg>',
     privacy: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>',
     about: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7h.01"/></svg>'
   };
   const links = [['settings', 'Settings'], ['bookmarks', 'Bookmarks'], ['history', 'History'], ['downloads', 'Downloads'], ['extensions', 'Extensions']];
-  const settingsLinks = [['general','General'],['appearance','Appearance'],['search','Search'],['privacy','Privacy'],['downloads','Downloads'],['about','About']];
+  const settingsLinks = [['general','General'],['appearance','Appearance'],['newtab','New tab'],['search','Search'],['privacy','Privacy'],['downloads','Downloads'],['about','About']];
   const subnav = state.internalPage === 'settings' ? `<div class="sidebar-caption settings-caption">SETTINGS</div><nav class="page-nav settings-subnav">${settingsLinks.map(([key,label]) => `<button class="page-nav-item setting-nav-item ${currentSettingsSection === key ? 'active' : ''}" data-setting-section="${key}"><span class="page-nav-icon">${icons[key]}</span>${label}</button>`).join('')}</nav>` : '';
-  return `<div class="page-sidebar-brand"><img src="assets/drift-mark.svg" alt=""><div><strong>Drift</strong><small>Browser</small></div></div>
+  return `<div class="page-sidebar-brand"><img src="../shared/assets/drift-mark.svg" alt=""><div><strong>Drift</strong><small>Browser</small></div></div>
     <div class="sidebar-caption">LIBRARY & PREFERENCES</div>
     <nav class="page-nav">${links.map(([page, label]) => `<button class="page-nav-item ${state.internalPage === page ? 'active' : ''}" data-page="${page}"><span class="page-nav-icon">${icons[page]}</span>${label}</button>`).join('')}</nav>${subnav}
-    <div class="sidebar-bottom"><span>Drift ${escapeHtml(state.version || '1.2.2')}</span><small>Changes save automatically</small></div>`;
+    <div class="sidebar-bottom"><span>Drift ${escapeHtml(state.version || '1.3.0')}</span><small>Changes save automatically</small></div>`;
 }
 function currentPageRenderKey() {
   const page = state.internalPage || '';
-  if (page === 'settings') return JSON.stringify([page, currentSettingsSection, state.settings, state.adBlockEnabled, state.blocked, state.version, state.electronVersion, state.chromiumVersion, state.profileDirectory]);
+  if (page === 'settings') return JSON.stringify([page, currentSettingsSection, state.settings, state.adBlockEnabled, currentSettingsSection === 'privacy' ? state.blocked : 0, state.canLaunchAtLogin, state.version, state.electronVersion, state.chromiumVersion, state.profileDirectory]);
   if (page === 'bookmarks') return JSON.stringify([page, bookmarkFilter, bookmarkFolderFilter, state.bookmarks]);
   if (page === 'history') return JSON.stringify([page, historyFilter, state.history]);
   if (page === 'downloads') return JSON.stringify([page, state.downloads]);
@@ -340,7 +410,7 @@ function render() {
   applySettings();
   document.body.classList.toggle('loading', !!state.loading);
   renderTabs();
-  if (document.activeElement !== $('addr')) $('addr').value = state.url || '';
+  if (document.activeElement !== $('addr') || !document.hasFocus()) $('addr').value = state.url || '';
   $('omni').classList.toggle('secure', (state.url || '').startsWith('https:'));
   $('back').disabled = !state.canBack;
   $('forward').disabled = !state.canForward;
@@ -352,6 +422,59 @@ function render() {
   renderFind();
 }
 
+const dialogCloseHooks = {};
+
+// ---- Clear browsing data ------------------------------------------------
+const CLEAR_OPTIONS = [
+  { id: 'history', label: 'Browsing history', hint: 'Pages you visited, and the address bar and palette suggestions built from them.', advanced: false },
+  { id: 'cookies', label: 'Cookies and other site data', hint: 'Signs you out of most websites. Also removes local storage, IndexedDB and offline data.', advanced: false },
+  { id: 'cache', label: 'Cached images and files', hint: 'Frees up space; some sites may load more slowly the first time you revisit.', advanced: false },
+  { id: 'downloads', label: 'Download history', hint: 'Removes the entries from the Downloads list. The files themselves are kept.', advanced: true },
+  { id: 'siteSettings', label: 'Site settings', hint: 'Ad-blocker exceptions you added for individual websites (always applies to all time).', advanced: true }
+];
+const clearUi = { tab: 'basic', selected: new Set(['history', 'cookies', 'cache']), range: 'hour', busy: false };
+function visibleClearOptions() { return CLEAR_OPTIONS.filter((o) => clearUi.tab === 'advanced' || !o.advanced); }
+function renderClearData() {
+  for (const tab of ['basic', 'advanced']) $(`clear-tab-${tab}`).setAttribute('aria-selected', String(clearUi.tab === tab));
+  $('clear-range').value = clearUi.range;
+  $('clear-options').innerHTML = visibleClearOptions().map((o) => `<label class="clear-option"><input type="checkbox" data-clear-type="${o.id}" ${clearUi.selected.has(o.id) ? 'checked' : ''}><span><strong>${o.label}</strong><small>${o.hint}</small></span></label>`).join('');
+  const picked = visibleClearOptions().filter((o) => clearUi.selected.has(o.id));
+  $('clear-submit').disabled = clearUi.busy || !picked.length;
+  $('clear-submit').textContent = clearUi.busy ? 'Clearing…' : 'Clear data';
+  $('clear-note').textContent = clearUi.range !== 'all' && picked.some((o) => o.id === 'cookies' || o.id === 'cache')
+    ? 'For a time range, cookies and site data are removed for the sites you visited in that period, and cached files are cleared completely. Choose “All time” to wipe everything.'
+    : '';
+}
+function openClearData(preset = {}) {
+  clearUi.tab = 'basic';
+  clearUi.busy = false;
+  if (Array.isArray(preset.types)) clearUi.selected = new Set(preset.types);
+  else if (!clearUi.selected.size) clearUi.selected = new Set(['history', 'cookies', 'cache']);
+  $('clear-error').classList.add('hidden');
+  renderClearData();
+  openDialog('clearDataDialog');
+  $('clear-range').focus();
+}
+function summarizeCleared(c = {}) {
+  const parts = [];
+  if (c.history !== undefined) parts.push(`${c.history} history ${c.history === 1 ? 'entry' : 'entries'}`);
+  if (c.downloads !== undefined) parts.push(`${c.downloads} download ${c.downloads === 1 ? 'entry' : 'entries'}`);
+  if (c.cookies) parts.push(`cookies and site data (${c.cookies})`);
+  if (c.cache) parts.push('cached files');
+  if (c.siteSettings !== undefined) parts.push(`${c.siteSettings} site ${c.siteSettings === 1 ? 'exception' : 'exceptions'}`);
+  return parts.length ? `Removed: ${parts.join(', ')}.` : 'Nothing to remove.';
+}
+async function submitClearData() {
+  const types = visibleClearOptions().filter((o) => clearUi.selected.has(o.id)).map((o) => o.id);
+  if (!types.length || clearUi.busy) return;
+  clearUi.busy = true; renderClearData();
+  const result = await drift.invoke('data:clear', { range: clearUi.range, types }).catch((error) => ({ error: error.message }));
+  clearUi.busy = false;
+  if (result?.error) { renderClearData(); $('clear-error').textContent = result.error; $('clear-error').classList.remove('hidden'); return; }
+  closeDialog('clearDataDialog');
+  await showAlert(summarizeCleared(result.cleared), 'Browsing data cleared');
+}
+
 function openDialog(id) {
   $(id).classList.remove('hidden');
   document.body.classList.add('dialog-open');
@@ -359,18 +482,169 @@ function openDialog(id) {
   drift.cmd('overlay-open');
 }
 function closeDialog(id) {
+  const hook = dialogCloseHooks[id];
+  delete dialogCloseHooks[id];
   $(id).classList.add('hidden');
   if (![...document.querySelectorAll('.dialog-overlay')].some((element) => !element.classList.contains('hidden'))) {
     document.body.classList.remove('dialog-open');
     drift.cmd('overlay-close');
   }
+  if (hook) hook();
 }
+function visibleDialogs() {
+  return [...document.querySelectorAll('.dialog-overlay:not(.hidden):not(.is-behind)')];
+}
+
+// ---- Themed confirm / alert (replaces window.confirm and window.alert)
+let confirmChain = Promise.resolve();
+function showConfirm({ title = 'Confirm', message = '', confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false, alertOnly = false } = {}) {
+  const run = () => new Promise((resolve) => {
+    $('confirm-title').textContent = title;
+    $('confirm-message').textContent = message;
+    const ok = $('confirm-ok'); const cancel = $('confirm-cancel');
+    ok.textContent = confirmLabel; cancel.textContent = cancelLabel;
+    ok.classList.toggle('danger', danger);
+    cancel.style.display = alertOnly ? 'none' : '';
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return; settled = true;
+      ok.onclick = null; cancel.onclick = null;
+      if (!$('confirmDialog').classList.contains('hidden')) { delete dialogCloseHooks.confirmDialog; closeDialog('confirmDialog'); }
+      resolve(value);
+    };
+    ok.onclick = () => finish(true);
+    cancel.onclick = () => finish(false);
+    dialogCloseHooks.confirmDialog = () => finish(false);
+    openDialog('confirmDialog');
+    (danger && !alertOnly ? cancel : ok).focus();
+  });
+  confirmChain = confirmChain.then(run, run);
+  return confirmChain;
+}
+function showAlert(message, title = 'Drift') {
+  return showConfirm({ title, message, confirmLabel: 'OK', alertOnly: true });
+}
+
+// ---- Add from Chrome Web Store (modal)
+const EXTENSION_ID_RE = /\b[a-p]{32}\b/;
+let storeBusy = false;
+let storeAbandoned = false;
+function setStoreError(message, info = false) {
+  const box = $('store-error');
+  box.textContent = message || '';
+  box.classList.toggle('hidden', !message);
+  box.classList.toggle('info', !!message && info);
+  $('store-input-wrap').classList.toggle('invalid', !!message && !info);
+}
+function setStoreBusy(busy) {
+  storeBusy = busy;
+  $('store-input').disabled = busy;
+  const submit = $('store-submit');
+  submit.disabled = busy;
+  submit.innerHTML = busy ? '<span class="spinner" aria-hidden="true"></span><span>Fetching…</span>' : 'Continue';
+  $('store-hint').textContent = busy ? 'Contacting the Chrome Web Store…' : 'You’ll review what the extension can access before it is added.';
+}
+function openStoreDialog() {
+  storeAbandoned = false;
+  setStoreError('');
+  setStoreBusy(false);
+  openDialog('storeInstallDialog');
+  dialogCloseHooks.storeInstallDialog = () => { if (storeBusy) storeAbandoned = true; };
+  setTimeout(() => { $('store-input').focus(); $('store-input').select(); }, 30);
+}
+async function submitStoreDialog() {
+  if (storeBusy) return;
+  const value = $('store-input').value.trim();
+  if (!value) { setStoreError('Paste a Chrome Web Store link or extension ID.'); $('store-input').focus(); return; }
+  if (!EXTENSION_ID_RE.test(value)) { setStoreError('That doesn’t look like a Chrome Web Store link or a 32-letter extension ID.'); $('store-input').focus(); return; }
+  setStoreError('');
+  setStoreBusy(true);
+  const result = await drift.invoke('extensions:install-store', value).catch((error) => ({ error: error.message }));
+  const stillOpen = !$('storeInstallDialog').classList.contains('hidden');
+  setStoreBusy(false);
+  if (result?.ok) {
+    $('store-input').value = '';
+    if (stillOpen) { delete dialogCloseHooks.storeInstallDialog; closeDialog('storeInstallDialog'); }
+    lastPageRenderKey = ''; renderInternalPage(true);
+    return;
+  }
+  if (!stillOpen) return;
+  if (result?.cancelled) setStoreError('Nothing was added. You can paste a different link or try again.', true);
+  else setStoreError(result?.error || 'The extension could not be installed.');
+  $('store-input').focus();
+}
+$('store-submit').addEventListener('click', submitStoreDialog);
+$('store-input').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); submitStoreDialog(); } });
+$('store-input').addEventListener('input', () => { if (!$('store-error').classList.contains('hidden')) setStoreError(''); });
+
+// ---- Extension install confirmation (driven by the main process)
+const extConfirmQueue = [];
+let extConfirm = null;
+function permissionIcon(level) {
+  return level === 'broad'
+    ? '<svg viewBox="0 0 24 24"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4.5M12 17.5h.01"/></svg>'
+    : '<svg viewBox="0 0 24 24"><path d="m5 12.5 4.2 4.2L19 7"/></svg>';
+}
+function presentExtensionConfirm(info) {
+  extConfirm = info;
+  const name = info.name || 'this extension';
+  $('ext-confirm-title').textContent = `Add “${name}”?`;
+  const meta = ['Chrome Web Store'];
+  if (info.version) meta.push(`Version ${info.version}`);
+  $('ext-confirm-meta').textContent = meta.join(' · ');
+  $('ext-confirm-desc').textContent = info.description || '';
+  const icon = $('ext-confirm-icon');
+  icon.textContent = '';
+  if (info.icon) { const img = document.createElement('img'); img.alt = ''; img.src = info.icon; icon.appendChild(img); }
+  else icon.textContent = name.charAt(0).toUpperCase() || 'E';
+  const list = $('ext-confirm-perms');
+  list.textContent = '';
+  const permissions = Array.isArray(info.permissions) ? info.permissions : [];
+  if (!permissions.length) {
+    const li = document.createElement('li'); li.className = 'ext-perm none'; li.innerHTML = permissionIcon('normal');
+    const span = document.createElement('span'); span.textContent = 'It doesn’t ask for any special permissions.'; li.appendChild(span); list.appendChild(li);
+  }
+  for (const permission of permissions) {
+    const li = document.createElement('li'); li.className = `ext-perm ${permission.level === 'broad' ? 'broad' : ''}`;
+    li.innerHTML = permissionIcon(permission.level);
+    const span = document.createElement('span'); span.textContent = permission.text; li.appendChild(span);
+    list.appendChild(li);
+  }
+  const hasBroad = permissions.some((permission) => permission.level === 'broad');
+  const note = $('ext-confirm-note');
+  note.classList.toggle('warn', hasBroad);
+  note.textContent = hasBroad ? 'Highlighted items give broad access to your browsing. Only add extensions from developers you trust.' : 'Only add extensions from developers you trust.';
+  $('storeInstallDialog').classList.toggle('is-behind', !$('storeInstallDialog').classList.contains('hidden'));
+  dialogCloseHooks.extensionConfirmDialog = () => answerExtensionConfirm(false);
+  openDialog('extensionConfirmDialog');
+  $('ext-confirm-allow').focus();
+}
+function answerExtensionConfirm(allowed) {
+  if (!extConfirm) return;
+  const { requestId } = extConfirm;
+  extConfirm = null;
+  drift.manage('extension:confirm-response', requestId, allowed === true);
+  delete dialogCloseHooks.extensionConfirmDialog;
+  if (!$('extensionConfirmDialog').classList.contains('hidden')) closeDialog('extensionConfirmDialog');
+  $('storeInstallDialog').classList.remove('is-behind');
+  if (extConfirmQueue.length) setTimeout(() => presentExtensionConfirm(extConfirmQueue.shift()), 60);
+}
+$('ext-confirm-allow').addEventListener('click', () => answerExtensionConfirm(true));
+$('ext-confirm-cancel').addEventListener('click', () => answerExtensionConfirm(false));
+drift.on('extension:confirm', (info) => {
+  // The user closed the paste dialog while the download was running: treat as cancel.
+  if (info?.source === 'pasted-link' && storeAbandoned) { drift.manage('extension:confirm-response', info.requestId, false); return; }
+  if (extConfirm) extConfirmQueue.push(info); else presentExtensionConfirm(info);
+});
 function saveSetting(patch) { drift.manage('settings:update', patch); }
 function refreshCurrentPage() { renderInternalPage(); }
 
 // Main-process events are allow-listed by preload.js.
 drift.on('state', (next) => { state = next; render(); });
 drift.on('focus-address', () => { $('addr').focus(); $('addr').select(); });
+// New tab page took focus: empty the address bar and drop its focus/selection.
+drift.on('reset-address', () => { $('addr').value = ''; $('addr').blur(); });
+drift.on('clear-data:show', () => openClearData());
 drift.on('find:show', () => {
   if (!state.find) state.find = {};
   state.find.visible = true; renderFind(); $('find-input').focus(); $('find-input').select();
@@ -389,6 +663,7 @@ $('downloads-btn').addEventListener('click', () => drift.cmd('downloads'));
 $('extensions-btn').addEventListener('click', () => drift.cmd('extensions'));
 $('protection').addEventListener('click', () => openDialog('adblockDialog'));
 $('settings').addEventListener('click', () => drift.cmd('settings'));
+$('home').addEventListener('click', () => drift.cmd('home'));
 $('find-btn').addEventListener('click', () => drift.cmd('find'));
 $('win-minimize').addEventListener('click', () => drift.windowAction('minimize'));
 $('win-maximize').addEventListener('click', () => drift.windowAction('maximize'));
@@ -401,7 +676,18 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     if (contextMenu && !contextMenu.classList.contains('hidden')) { closeContextMenu(); return; }
     if (!$('findbar').classList.contains('hidden')) { drift.manage('find:close'); return; }
-    document.querySelectorAll('.dialog-overlay:not(.hidden)').forEach((overlay) => closeDialog(overlay.id));
+    const open = visibleDialogs();
+    if (open.length) { event.preventDefault(); closeDialog(open[open.length - 1].id); }
+  } else if (event.key === 'Tab') {
+    const open = visibleDialogs();
+    if (!open.length) return;
+    const focusable = [...open[open.length - 1].querySelectorAll('button:not([disabled]):not(.hidden), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')]
+      .filter((element) => element.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0]; const last = focusable[focusable.length - 1];
+    if (!open[open.length - 1].contains(document.activeElement)) { event.preventDefault(); first.focus(); }
+    else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   }
 });
 
@@ -422,15 +708,31 @@ $('page-sidebar').addEventListener('click', (event) => {
 $('page-main').addEventListener('change', (event) => {
   const id = event.target.id;
   if (id === 'bookmark-folder-filter') { bookmarkFolderFilter = event.target.value; renderBookmarksPage(); lastPageRenderKey = currentPageRenderKey(); }
-  else if (id === 'theme-setting') saveSetting({ appearance: event.target.value });
+  else if (event.target.name === 'appearance-mode') {
+    state.settings = { ...state.settings, appearance: event.target.value }; applySettings(); // instant preview, main confirms below
+    saveSetting({ appearance: event.target.value });
+  }
+  else if (event.target.name === 'startup-mode') saveSetting({ startupMode: event.target.value });
+  else if (id === 'homepage-setting') {
+    const value = event.target.value.trim();
+    event.target.classList.toggle('invalid', !!value && !looksLikeUrl(value));
+    if (!value || looksLikeUrl(value)) saveSetting({ homepage: value });
+  }
+  else if (id === 'show-home-setting') saveSetting({ showHomeButton: event.target.checked });
+  else if (id === 'window-start-setting') saveSetting({ windowStart: event.target.value });
+  else if (id === 'launch-login-setting') saveSetting({ launchAtLogin: event.target.checked });
+  else if (id === 'newtab-opens-setting') saveSetting({ newTabOpens: event.target.value });
+  else if (id === 'newtab-shortcuts-setting') saveSetting({ newTabShortcuts: event.target.value });
+  else if (id === 'newtab-clock-setting') saveSetting({ newTabClock: event.target.checked });
   else if (id === 'search-setting') saveSetting({ searchEngine: event.target.value });
-  else if (id === 'restore-session-setting') saveSetting({ restoreSession: event.target.checked });
   else if (id === 'show-bookmarks-setting') saveSetting({ showBookmarksBar: event.target.checked });
   else if (id === 'ask-save-setting') saveSetting({ askWhereToSave: event.target.checked });
   else if (id === 'settings-adblock') drift.manage('adblock:toggle', event.target.checked);
 });
 $('page-main').addEventListener('click', (event) => {
-  const themeButton = event.target.closest('[data-color-theme]');
+  const sectionLink = event.target.closest('[data-setting-section-link]');
+  if (sectionLink) { currentSettingsSection = sectionLink.dataset.settingSectionLink; renderSettingsContent(); $('page-sidebar').innerHTML = pageNavigation(); return; }
+  const themeButton = event.target.closest('button[data-color-theme]'); // not <html>, which also carries data-color-theme
   if (themeButton) {
     saveSetting({ colorTheme: themeButton.dataset.colorTheme });
     document.documentElement.dataset.colorTheme = themeButton.dataset.colorTheme;
@@ -444,10 +746,20 @@ $('page-main').addEventListener('click', (event) => {
   }
 });
 $('page-main').addEventListener('input', (event) => {
+  if (event.target.classList?.contains('page-input')) event.target.classList.remove('invalid');
   if (event.target.id === 'bookmark-search') { bookmarkFilter = event.target.value; const start = event.target.selectionStart; renderBookmarksPage(); lastPageRenderKey = currentPageRenderKey(); $('bookmark-search').focus(); $('bookmark-search').setSelectionRange(start, start); }
   if (event.target.id === 'history-search') { historyFilter = event.target.value; const start = event.target.selectionStart; renderHistoryPage(); lastPageRenderKey = currentPageRenderKey(); $('history-search').focus(); $('history-search').setSelectionRange(start, start); }
 });
 $('page-main').addEventListener('submit', (event) => {
+  if (event.target.id === 'startup-add-form') {
+    event.preventDefault();
+    const input = $('startup-add-input');
+    const value = input.value.trim();
+    if (!value) return;
+    if (!looksLikeUrl(value)) { input.classList.add('invalid'); input.focus(); return; }
+    saveSetting({ startupPages: [...(state.settings.startupPages || []), value] });
+    return;
+  }
   if (event.target.id !== 'add-bookmark-form') return;
   event.preventDefault();
   const title = $('new-bookmark-title').value.trim();
@@ -464,6 +776,12 @@ $('page-main').addEventListener('click', async (event) => {
   if (!button) return;
   const action = button.dataset.action;
   if (action === 'open-protection') openDialog('adblockDialog');
+  else if (action === 'startup-use-open-tabs') drift.cmd('startup-use-open-tabs');
+  else if (action === 'remove-startup-page') {
+    const pages = [...(state.settings.startupPages || [])];
+    pages.splice(Number(button.dataset.index), 1);
+    saveSetting({ startupPages: pages });
+  }
   else if (action === 'open-profile-folder') drift.cmd('open-profile-folder');
   else if (action === 'choose-download-folder') {
     const folder = await drift.invoke('downloads:choose-folder').catch(() => null);
@@ -471,13 +789,26 @@ $('page-main').addEventListener('click', async (event) => {
   } else if (action === 'install-extension') {
     button.disabled = true; button.textContent = 'Selecting folder…';
     const result = await drift.invoke('extensions:install').catch((error) => ({ error: error.message }));
-    if (result?.error) window.alert(result.error);
+    if (result?.error) await showAlert(result.error, 'Couldn’t install extension');
     lastPageRenderKey = ''; renderInternalPage(true);
+  } else if (action === 'browse-web-store') {
+    drift.cmd('new', 'https://chromewebstore.google.com/category/extensions');
+  } else if (action === 'open-store-dialog') {
+    openStoreDialog();
   } else if (action === 'remove-extension') {
+    const extension = (state.extensions || []).find((entry) => entry.id === button.dataset.id);
+    const confirmed = await showConfirm({
+      title: `Remove “${extension?.name || 'this extension'}”?`,
+      message: 'It will be removed from Drift and stop running on your pages.',
+      confirmLabel: 'Remove', danger: true
+    });
+    if (!confirmed) return;
     const result = await drift.invoke('extensions:remove', button.dataset.id).catch((error) => ({ error: error.message }));
-    if (result?.error) window.alert(result.error);
+    if (result?.error) await showAlert(result.error, 'Couldn’t remove extension');
   } else if (action === 'clear-history') {
-    if (window.confirm('Clear all browsing history from this device?')) drift.manage('history:clear');
+    openClearData({ types: ['history'] });
+  } else if (action === 'clear-data') {
+    openClearData();
   } else if (action === 'remove-history') drift.manage('history:remove', button.dataset.id);
   else if (action === 'open-history' || action === 'open-bookmark') drift.cmd('new', button.dataset.url);
   else if (action === 'remove-bookmark') drift.manage('bookmark:remove', button.dataset.url);
@@ -485,7 +816,7 @@ $('page-main').addEventListener('click', async (event) => {
     const row = button.closest('.bookmark-manager-row');
     const title = row.querySelector('.bookmark-title').value.trim();
     const url = row.querySelector('.bookmark-url').value.trim();
-    if (!title || !/^https?:\/\//i.test(url)) { window.alert('Enter a title and a valid http or https URL.'); return; }
+    if (!title || !/^https?:\/\//i.test(url)) { await showAlert('Enter a title and a valid http or https URL.', 'Check the bookmark'); return; }
     drift.manage('bookmark:update', button.dataset.url, title, url, row.querySelector('.bookmark-folder')?.value || '');
   } else if (action === 'focus-add-bookmark') {
     const form = $('add-bookmark-form'); form.classList.toggle('hidden'); form.dataset.open = form.classList.contains('hidden') ? '' : '1';
@@ -618,3 +949,14 @@ document.addEventListener('keydown', (event) => {
 
 // Render immediately so the browser chrome never flashes an unstyled shell.
 render();
+
+// Clear browsing data dialog wiring
+document.querySelectorAll('[data-clear-tab]').forEach((tab) => tab.addEventListener('click', () => { clearUi.tab = tab.dataset.clearTab; renderClearData(); }));
+$('clear-range').addEventListener('change', (event) => { clearUi.range = event.target.value; renderClearData(); });
+$('clear-options').addEventListener('change', (event) => {
+  const box = event.target.closest('[data-clear-type]');
+  if (!box) return;
+  if (box.checked) clearUi.selected.add(box.dataset.clearType); else clearUi.selected.delete(box.dataset.clearType);
+  renderClearData();
+});
+$('clear-submit').addEventListener('click', submitClearData);

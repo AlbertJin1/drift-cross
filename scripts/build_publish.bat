@@ -12,7 +12,7 @@ if errorlevel 1 (
     goto :fail_end
 )
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 echo.
 echo Installing locked project dependencies...
@@ -36,7 +36,7 @@ if errorlevel 1 goto :fail_end
 echo.
 echo ============================================================
 echo Drift build complete.
-echo Installer: %~dp0dist\Drift-Setup.exe
+echo Installer: %CD%\dist\Drift-Setup.exe
 echo.
 echo Installation is per-user and does not require Administrator access.
 echo App files: %LOCALAPPDATA%\Programs\Drift
