@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const input = $('q'), list = $('list');
-const KIND = { go: '\u2197', tab: '\u25A3', bookmark: '\u2605', history: '\u25F7', command: '\u2318' };
+const KIND = { go: 'external', tab: 'tab', bookmark: 'starFill', history: 'history', command: 'terminal' };
 let items = [], sel = 0, seq = 0;
 
 async function refresh() {
@@ -13,7 +13,8 @@ async function refresh() {
 function draw() {
   list.replaceChildren(...items.map((it, i) => {
     const row = document.createElement('div'); row.className = 'row' + (i === sel ? ' on' : '');
-    const k = document.createElement('span'); k.className = 'kind'; k.textContent = KIND[it.kind] || '\u2022';
+    const k = document.createElement('span'); k.className = 'kind';
+    if (KIND[it.kind]) k.innerHTML = fa(KIND[it.kind]); else k.textContent = '\u2022';
     const main = document.createElement('div'); main.className = 'main';
     const l = document.createElement('div'); l.className = 'label'; l.textContent = it.label;
     const s = document.createElement('div'); s.className = 'sub'; s.textContent = it.sub || '';

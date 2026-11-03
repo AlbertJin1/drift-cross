@@ -1,0 +1,12 @@
+{
+  "appId": "org.drift.browser",
+  "productName": "Drift",
+  "directories": { "output": "dist-setup" },
+  "files": ["src/**/*", "build/icon.png", "build/icon.ico", "build/icon.icns", "build/icon.svg", "package.json"],
+  "extraMetadata": { "main": "src/setup/entry.js" },
+  "compression": "maximum",
+  "electronLanguages": ["en-US"],
+  "asar": true,
+  "win": { "target": ["portable"], "icon": "build/icon.ico", "artifactName": "Drift-Setup.${ext}" },
+  "portable": { "artifactName": "Drift-Setup.${ext}", "requestExecutionLevel": "user" }
+}

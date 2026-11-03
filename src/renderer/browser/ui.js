@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 let state = {
   tabs: [], url: '', internalPage: '', bookmarks: [], history: [], downloads: [], extensions: [],
   blockedHosts: [], blocked: 0, adBlockEnabled: true,
-  settings: { appearance: 'system', colorTheme: 'violet', searchEngine: 'duckduckgo', startupMode: 'previous', startupPages: [], homepage: '', showHomeButton: false, newTabOpens: 'newtab', newTabShortcuts: 'smart', newTabClock: true, windowStart: 'default', launchAtLogin: false, showBookmarksBar: true, askWhereToSave: false },
+  settings: { appearance: 'system', colorTheme: 'violet', searchEngine: 'duckduckgo', startupMode: 'newtab', startupPages: [], homepage: '', showHomeButton: false, newTabOpens: 'newtab', newTabShortcuts: 'smart', newTabClock: true, windowStart: 'default', launchAtLogin: false, showBookmarksBar: true, askWhereToSave: false },
   version: '1.3.0', find: { visible: false, activeMatchOrdinal: 0, matches: 0 }
 };
 document.body.classList.toggle('is-windows', drift.platform === 'win32');
@@ -27,8 +27,8 @@ const COLOR_THEMES = [
   { id: 'graphite', name: 'Graphite', primary: '#aab4c4', secondary: '#8bc8bf' },
   { id: 'mint', name: 'Mint', primary: '#61d4d1', secondary: '#8bbcff' }
 ];
-const X_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-const STAR_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2.8 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3.1-5.8 3.1 1.1-6.5-4.7-4.6 6.5-.9L12 2.8z"/></svg>';
+const X_SVG = '<svg data-fa="close"></svg>';
+const STAR_SVG = '<svg data-fa="star"></svg>';
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -48,6 +48,17 @@ function formatDate(value, withTime = true) {
 }
 function isCompleted(download) { return ['completed', 'cancelled', 'interrupted'].includes(download.state); }
 
+// ---- Tab strip ------------------------------------------------------------
+// Every tab shares one width (--tab-w) computed in JS from the space actually
+// available. Because widths are explicit, CSS can animate them: new tabs grow
+// in, closed tabs collapse out, and the siblings glide instead of jumping.
+const TAB_ENTER_MS = 260;
+const TAB_EXIT_MS = 200;
+let tabsFirstRender = true;
+let tabsLockedWidth = 0;      // keeps widths steady while closing tabs with the mouse
+let tabLayoutFrame = 0;
+let tabResizeTimer = 0;
+
 function makeTab(id) {
   const element = document.createElement('div');
   element.className = 'tab';
@@ -55,14 +66,29 @@ function makeTab(id) {
   element.setAttribute('role', 'button');
   const icon = document.createElement('div'); icon.className = 'tab-ico';
   const title = document.createElement('span'); title.className = 'tab-title';
-  const close = document.createElement('button'); close.className = 'tab-close'; close.title = 'Close tab'; close.setAttribute('aria-label', 'Close tab'); close.innerHTML = X_SVG;
+  const close = document.createElement('button'); close.className = 'tab-close'; close.title = 'Close tab'; close.setAttribute('aria-label', 'Close tab'); close.tabIndex = -1; close.innerHTML = X_SVG;
   element.append(icon, title, close);
   element._id = id; element._ico = icon; element._title = title;
-  element.addEventListener('click', (event) => drift.cmd(event.target.closest('.tab-close') ? 'close' : 'activate', element._id));
-  element.addEventListener('auxclick', (event) => { if (event.button === 1) drift.cmd('close', element._id); });
+  element.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || event.target.closest('.tab-close')) return;
+    if (element.classList.contains('closing') || element.classList.contains('entering')) return;
+    beginTabPress(element, event);
+  });
+  element.addEventListener('click', (event) => {
+    if (tabDrag.justDragged || element.classList.contains('closing')) return;
+    if (event.target.closest('.tab-close')) { lockTabWidths(); drift.cmd('close', element._id); }
+    else drift.cmd('activate', element._id);
+  });
+  element.addEventListener('auxclick', (event) => { if (event.button === 1 && !element.classList.contains('closing')) { lockTabWidths(); drift.cmd('close', element._id); } });
   element.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); drift.cmd('activate', element._id); }
     else if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); drift.cmd('close', element._id); }
+    else if (event.altKey && event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+      // Alt+Shift+Arrow moves the focused tab one slot.
+      event.preventDefault();
+      const live = liveTabEls(); const to = live.indexOf(element) + (event.key === 'ArrowRight' ? 1 : -1);
+      if (to >= 0 && to < live.length) drift.cmd('move-tab', { id: element._id, index: to });
+    }
   });
   return element;
 }
@@ -72,38 +98,419 @@ function fallbackTabIcon(tab) {
   return node;
 }
 function updateTab(element, tab) {
-  element.className = 'tab' + (tab.active ? ' active' : '') + (tab.loading ? ' is-loading' : '');
-  element._title.textContent = tab.title || 'New tab';
-  element.title = tab.title || '';
-  const stamp = `${tab.loading ? 1 : 0}|${tab.favicon || ''}|${(tab.title || '?').slice(0, 1)}`;
+  element.classList.toggle('active', !!tab.active);
+  element.classList.toggle('is-loading', !!tab.loading);
+  element.setAttribute('aria-selected', String(!!tab.active));
+  const label = tab.title || 'New tab';
+  if (element._title.textContent !== label) element._title.textContent = label;
+  element.title = tab.title || label;
+  const internal = (String(tab.url || '').match(/^drift:\/\/([a-z]+)/i) || [])[1]?.toLowerCase() || '';
+  const stamp = `${tab.loading ? 1 : 0}|${internal ? 'int:' + internal : tab.favicon || ''}|${(tab.title || '?').slice(0, 1)}`;
   if (element._iconStamp !== stamp) {
     element._ico.replaceChildren();
-    if (tab.loading) {
+    if (internal && window.fa) {
+      const names = { settings: 'gear', bookmarks: 'bookmark', history: 'history', downloads: 'download', extensions: 'puzzle' };
+      const holder = document.createElement('div'); holder.className = 'tab-internal-ico';
+      holder.innerHTML = window.fa(names[internal] || 'gear'); element._ico.append(holder);
+    } else if (tab.loading) {
       const spinner = document.createElement('div'); spinner.className = 'tab-spinner'; element._ico.append(spinner);
     } else if (tab.favicon) {
-      const image = document.createElement('img'); image.src = tab.favicon; image.alt = '';
+      const image = document.createElement('img'); image.src = tab.favicon; image.alt = ''; image.draggable = false;
       image.onerror = () => image.replaceWith(fallbackTabIcon(tab));
       element._ico.append(image);
     } else element._ico.append(fallbackTabIcon(tab));
     element._iconStamp = stamp;
   }
 }
+function cssPx(node, name, fallback) {
+  const value = parseFloat(getComputedStyle(node).getPropertyValue(name));
+  return Number.isFinite(value) ? value : fallback;
+}
+// Width of the strip = tab bar minus everything else on the row, so tabs only
+// shrink (and scroll) when they genuinely run out of room.
+function layoutTabs() {
+  tabLayoutFrame = 0;
+  const bar = $('tabbar'); const box = $('tabs');
+  const live = Array.from(box.children).filter((el) => !el.classList.contains('closing'));
+  const count = live.length;
+  // The tab list button appears once the strip is crowded; it must be toggled before the row is measured.
+  const listBtn = $('tab-list-btn');
+  const showList = count > 1 && (count >= 6 || box.classList.contains('has-overflow'));
+  if (listBtn.hidden === showList) listBtn.hidden = !showList;
+  const countLabel = String(count);
+  if ($('tab-list-count').textContent !== countLabel) $('tab-list-count').textContent = countLabel;
+  const min = cssPx(box, '--tab-min', 36); const ideal = cssPx(box, '--tab-ideal', 178); const gap = cssPx(box, '--tab-gap', 4);
+  const activeMin = 128; // the active tab always keeps room for icon + title + close
+  const barStyle = getComputedStyle(bar);
+  const siblings = Array.from(bar.children).filter((el) => el !== box && getComputedStyle(el).display !== 'none');
+  const used = siblings.reduce((sum, el) => sum + (el.id === 'tab-spacer' ? 0 : el.offsetWidth), 0);
+  const rowGap = parseFloat(barStyle.columnGap) || 0;
+  const padding = (parseFloat(barStyle.paddingLeft) || 0) + (parseFloat(barStyle.paddingRight) || 0);
+  const dragRoom = 40;
+  const available = Math.max(min + activeMin, bar.clientWidth - padding - used - rowGap * siblings.length - dragRoom);
+  // Share the room, but reserve the wider active tab first so inactive tabs shrink to icons.
+  const others = Math.max(0, count - 1);
+  const evenShare = count ? (available - gap * count) / count : ideal;
+  let width;
+  if (evenShare >= 112) width = Math.min(ideal, evenShare);              // everyone fits with titles
+  else if (others) width = (available - gap * count - activeMin) / others; // inactive tabs shrink, active stays wide
+  else width = ideal;
+  width = Math.max(min, Math.min(ideal, width));
+  if (tabsLockedWidth) width = Math.max(min, Math.min(width, tabsLockedWidth));
+  const density = width >= 112 ? 'full' : width >= 76 ? 'compact' : width >= 44 ? 'icon' : 'dense';
+  box.style.setProperty('--tab-w', `${Math.round(width * 100) / 100}px`);
+  box.style.setProperty('--tab-active-min', density === 'full' ? '0px' : `${density === 'dense' ? 40 : activeMin}px`);
+  box.dataset.density = density;
+  box.classList.toggle('is-compact', width < 120);
+  box.classList.toggle('is-tiny', width < 100);
+  box._tabWidth = width;
+  updateTabOverflow();
+}
+function updateTabOverflow() {
+  const box = $('tabs');
+  const overflow = box.scrollWidth - box.clientWidth > 2;
+  box.classList.toggle('has-overflow', overflow);
+  box.classList.toggle('at-start', overflow && box.scrollLeft <= 2);
+  box.classList.toggle('at-end', overflow && box.scrollLeft >= box.scrollWidth - box.clientWidth - 2);
+}
+// Mouse wheel scrolls the strip sideways when tabs overflow.
+$('tabs').addEventListener('wheel', (event) => {
+  const box = $('tabs');
+  if (box.scrollWidth <= box.clientWidth) return;
+  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+  box.scrollLeft += delta; event.preventDefault();
+}, { passive: false });
+$('tabs').addEventListener('scroll', updateTabOverflow, { passive: true });
+function scheduleTabLayout() { if (!tabLayoutFrame) tabLayoutFrame = requestAnimationFrame(layoutTabs); }
+// Chrome-style: after closing with the mouse, remaining tabs keep their width
+// until the pointer leaves the strip so the next close button lands under it.
+function lockTabWidths() { tabsLockedWidth = $('tabs')._tabWidth || 0; }
+function unlockTabWidths() { if (!tabsLockedWidth) return; tabsLockedWidth = 0; scheduleTabLayout(); }
+
+function revealTab(element) {
+  if (!element) return;
+  const run = () => element.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+  run(); setTimeout(run, TAB_ENTER_MS + 30);
+}
+function removeTabElement(id, element, instant) {
+  tabEls.delete(id);
+  if (instant || element.classList.contains('entering')) { element.remove(); scheduleTabLayout(); return; }
+  element.classList.add('closing');
+  element.setAttribute('aria-hidden', 'true');
+  element.querySelectorAll('button').forEach((button) => { button.tabIndex = -1; });
+  let done = false;
+  const finish = () => { if (done) return; done = true; element.remove(); scheduleTabLayout(); };
+  element.addEventListener('transitionend', (event) => { if (event.target === element && event.propertyName === 'width') finish(); });
+  setTimeout(finish, TAB_EXIT_MS + 120);
+}
 function renderTabs() {
-  const box = $('tabs'); const seen = new Set();
-  (state.tabs || []).forEach((tab, index) => {
+  const box = $('tabs');
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const animate = !tabsFirstRender && !reduce && !document.hidden;
+  const fresh = [];
+  const tabsList = orderedTabs();
+  const focusedTab = document.activeElement?.classList?.contains('tab') ? document.activeElement : null;
+  // Retire removed tabs first so they stay in their slot while they collapse.
+  const keep = new Set(tabsList.map((tab) => tab.id));
+  for (const [id, element] of Array.from(tabEls)) if (!keep.has(id)) removeTabElement(id, element, !animate);
+  let cursor = box.firstElementChild;
+  tabsList.forEach((tab) => {
     let element = tabEls.get(tab.id);
-    if (!element) { element = makeTab(tab.id); tabEls.set(tab.id, element); }
+    if (!element) {
+      element = makeTab(tab.id); tabEls.set(tab.id, element);
+      if (animate) { element.classList.add('entering'); fresh.push(element); }
+    }
     updateTab(element, tab);
-    if (box.children[index] !== element) box.insertBefore(element, box.children[index] || null);
-    seen.add(tab.id);
+    while (cursor && cursor.classList.contains('closing')) cursor = cursor.nextElementSibling;
+    if (cursor === element) cursor = cursor.nextElementSibling;
+    else box.insertBefore(element, cursor);
   });
-  for (const [id, element] of tabEls) if (!seen.has(id)) { element.remove(); tabEls.delete(id); }
-  const active = (state.tabs || []).find((tab) => tab.active);
+  layoutTabs();
+  if (fresh.length) {
+    void box.offsetWidth; // commit the collapsed starting state, then let it grow
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      for (const element of fresh) element.classList.remove('entering');
+    }));
+  }
+  if (focusedTab && document.activeElement !== focusedTab && focusedTab.isConnected) focusedTab.focus({ preventScroll: true });
+  const active = tabsList.find((tab) => tab.active);
   if (active && active.id !== lastActiveId) {
-    tabEls.get(active.id)?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+    if (!tabDrag.active && !tabDrag.settling) revealTab(tabEls.get(active.id));
     lastActiveId = active.id;
   }
+  tabsFirstRender = false;
+  renderTabList();
 }
+$('tabs').addEventListener('mouseleave', unlockTabWidths);
+$('tabbar').addEventListener('mouseleave', unlockTabWidths);
+// While the window is being resized, widths follow instantly instead of lagging.
+new ResizeObserver(() => {
+  const box = $('tabs'); box.classList.add('is-resizing');
+  layoutTabs();
+  clearTimeout(tabResizeTimer);
+  tabResizeTimer = setTimeout(() => box.classList.remove('is-resizing'), 140);
+}).observe($('tabbar'));
+
+// ---- Drag to reorder --------------------------------------------------------
+// Pointer-driven so tabs follow the cursor smoothly: the dragged tab tracks the
+// pointer, its neighbours slide out of the way, and on release it glides into
+// its slot before the new order is committed to the main process.
+const TAB_DRAG_THRESHOLD = 5;
+const tabDrag = { el: null, active: false, settling: false, justDragged: false, pending: null, startX: 0, clientX: 0, startScroll: 0, startIndex: 0, target: 0, count: 0, pointerId: 0, scrollRaf: 0 };
+
+function liveTabEls() { return Array.from($('tabs').children).filter((el) => el.classList.contains('tab') && !el.classList.contains('closing')); }
+function tabStep(el) { return el.offsetWidth + (parseFloat(getComputedStyle(el).marginRight) || 0); }
+// Until main confirms a drop, keep showing the order the user just made so a stale state push cannot snap tabs back.
+function orderedTabs() {
+  const tabs = state.tabs || [];
+  const pending = tabDrag.pending;
+  if (!pending) return tabs;
+  const ids = tabs.map((tab) => tab.id);
+  if (Date.now() > pending.until || (ids.length === pending.ids.length && ids.every((id, i) => id === pending.ids[i]))) { tabDrag.pending = null; return tabs; }
+  const rank = new Map(pending.ids.map((id, i) => [id, i]));
+  return tabs.slice().sort((a, b) => (rank.has(a.id) ? rank.get(a.id) : 1e9) - (rank.has(b.id) ? rank.get(b.id) : 1e9));
+}
+function beginTabPress(element, event) {
+  if (tabDrag.el || tabDrag.settling) return;
+  Object.assign(tabDrag, { el: element, active: false, startX: event.clientX, clientX: event.clientX, pointerId: event.pointerId, startScroll: $('tabs').scrollLeft });
+  window.addEventListener('pointermove', onTabPointerMove);
+  window.addEventListener('pointerup', onTabPointerUp);
+  window.addEventListener('pointercancel', onTabPointerCancel);
+  window.addEventListener('keydown', onTabDragKey, true);
+}
+function stopTabPress() {
+  window.removeEventListener('pointermove', onTabPointerMove);
+  window.removeEventListener('pointerup', onTabPointerUp);
+  window.removeEventListener('pointercancel', onTabPointerCancel);
+  window.removeEventListener('keydown', onTabDragKey, true);
+  cancelAnimationFrame(tabDrag.scrollRaf); tabDrag.scrollRaf = 0;
+}
+function onTabPointerMove(event) {
+  if (event.pointerId !== tabDrag.pointerId || !tabDrag.el) return;
+  tabDrag.clientX = event.clientX;
+  if (!tabDrag.active) {
+    if (Math.abs(event.clientX - tabDrag.startX) < TAB_DRAG_THRESHOLD) return;
+    if (!startTabDrag()) return;
+  }
+  updateTabDrag();
+}
+function startTabDrag() {
+  const box = $('tabs'); const el = tabDrag.el;
+  const live = liveTabEls();
+  const index = live.indexOf(el);
+  if (index < 0 || live.length < 2) { stopTabPress(); tabDrag.el = null; return false; }
+  Object.assign(tabDrag, { active: true, startIndex: index, target: index, count: live.length, startScroll: box.scrollLeft, startX: tabDrag.clientX });
+  try { box.setPointerCapture(tabDrag.pointerId); } catch {}
+  el.classList.add('dragging'); box.classList.add('is-dragging'); document.body.classList.add('tab-dragging');
+  if (!el.classList.contains('active')) drift.cmd('activate', el._id); // like other browsers: grabbing a tab selects it
+  tabDrag.scrollRaf = requestAnimationFrame(tabDragAutoScroll);
+  return true;
+}
+function updateTabDrag() {
+  const box = $('tabs'); const el = tabDrag.el;
+  const live = liveTabEls();
+  if (live.length !== tabDrag.count || !live.includes(el)) { settleTabDrag(false); return; } // tabs were opened or closed mid-drag
+  const step = tabStep(el); const start = tabDrag.startIndex; const last = live.length - 1;
+  let dx = tabDrag.clientX - tabDrag.startX + (box.scrollLeft - tabDrag.startScroll);
+  dx = Math.max(-start * step, Math.min((last - start) * step, dx));
+  const target = Math.max(0, Math.min(last, Math.round(start + dx / step)));
+  tabDrag.target = target;
+  el.style.transform = `translateX(${dx}px)`;
+  live.forEach((other, j) => {
+    if (other === el) return;
+    let shift = 0;
+    if (start < target && j > start && j <= target) shift = -step;
+    else if (start > target && j >= target && j < start) shift = step;
+    other.style.transform = shift ? `translateX(${shift}px)` : '';
+  });
+}
+// Dragging near either end of an overflowing strip scrolls it.
+function tabDragAutoScroll() {
+  tabDrag.scrollRaf = 0;
+  if (!tabDrag.active || tabDrag.settling) return;
+  const box = $('tabs'); const rect = box.getBoundingClientRect(); const edge = 36;
+  let speed = 0;
+  if (tabDrag.clientX < rect.left + edge) speed = -Math.ceil((rect.left + edge - tabDrag.clientX) / 3);
+  else if (tabDrag.clientX > rect.right - edge) speed = Math.ceil((tabDrag.clientX - (rect.right - edge)) / 3);
+  speed = Math.max(-18, Math.min(18, speed));
+  if (speed && box.scrollWidth > box.clientWidth) {
+    const before = box.scrollLeft; box.scrollLeft += speed;
+    if (box.scrollLeft !== before) updateTabDrag();
+  }
+  tabDrag.scrollRaf = requestAnimationFrame(tabDragAutoScroll);
+}
+function onTabPointerUp(event) {
+  if (event.pointerId !== tabDrag.pointerId) return;
+  if (!tabDrag.active) { stopTabPress(); tabDrag.el = null; return; }
+  tabDrag.justDragged = true; setTimeout(() => { tabDrag.justDragged = false; }, 0);
+  settleTabDrag(true);
+}
+function onTabPointerCancel(event) {
+  if (event.pointerId !== tabDrag.pointerId) return;
+  if (tabDrag.active) settleTabDrag(false); else { stopTabPress(); tabDrag.el = null; }
+}
+function onTabDragKey(event) {
+  if (event.key !== 'Escape') return;
+  event.preventDefault(); event.stopPropagation();
+  if (tabDrag.active) settleTabDrag(false); else { stopTabPress(); tabDrag.el = null; }
+}
+function settleTabDrag(commit) {
+  if (tabDrag.settling) return;
+  const el = tabDrag.el; const live = liveTabEls();
+  stopTabPress();
+  tabDrag.settling = true;
+  const start = tabDrag.startIndex; const target = commit ? tabDrag.target : start;
+  el.classList.remove('dragging'); el.classList.add('settling');
+  void el.offsetWidth;
+  el.style.transform = `translateX(${(target - start) * tabStep(el)}px)`;
+  if (!commit) live.forEach((other) => { if (other !== el) other.style.transform = ''; });
+  setTimeout(() => finishTabDrag(commit, target, start), 170);
+}
+function finishTabDrag(commit, target, start) {
+  const box = $('tabs'); const el = tabDrag.el;
+  box.classList.add('no-anim');
+  liveTabEls().forEach((tab) => { tab.style.transform = ''; });
+  el.classList.remove('settling', 'dragging');
+  if (commit && target !== start && el.isConnected) {
+    const others = liveTabEls().filter((tab) => tab !== el);
+    const ref = others[target];
+    if (ref) box.insertBefore(el, ref); else box.insertBefore(el, others[others.length - 1].nextSibling);
+    tabDrag.pending = { ids: liveTabEls().map((tab) => tab._id), until: Date.now() + 800 };
+    drift.cmd('move-tab', { id: el._id, index: target });
+  }
+  void box.offsetWidth;
+  box.classList.remove('is-dragging', 'no-anim');
+  document.body.classList.remove('tab-dragging');
+  tabDrag.el = null; tabDrag.active = false; tabDrag.settling = false;
+  scheduleTabLayout();
+}
+
+// ---- Tab list ---------------------------------------------------------------
+// When the strip is crowded the list button shows every open tab with its title
+// and address, a search box, and a close button per row.
+const TL = { open: false, sel: 0, sig: '', ids: [] };
+const tlEl = $('tab-list'); const tlInput = $('tl-input'); const tlRows = $('tl-rows'); const tlBtn = $('tab-list-btn');
+const TL_INTERNAL_ICONS = { settings: 'gear', bookmarks: 'bookmark', history: 'history', downloads: 'download', extensions: 'puzzle' };
+function tlSubtitle(url) {
+  const raw = String(url || '');
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.hostname.replace(/^www\./, '') + (parsed.pathname.length > 1 ? parsed.pathname : '');
+    return parsed.protocol === 'drift:' && !/^drift:\/\/newtab/i.test(raw) ? raw : '';
+  } catch { return ''; }
+}
+function tlVisibleTabs() {
+  const q = tlInput.value.trim().toLowerCase();
+  return orderedTabs().filter((tab) => !q || `${tab.title || ''} ${tab.url || ''}`.toLowerCase().includes(q));
+}
+function tlRowHtml(tab) {
+  const title = tab.title || 'New tab';
+  const internal = (String(tab.url || '').match(/^drift:\/\/([a-z]+)/i) || [])[1]?.toLowerCase() || '';
+  const letter = escapeHtml((title || '?').trim().charAt(0).toUpperCase() || '?');
+  let icon;
+  if (internal && window.fa && TL_INTERNAL_ICONS[internal]) icon = `<span class="tl-internal">${window.fa(TL_INTERNAL_ICONS[internal])}</span>`;
+  else if (tab.favicon) icon = `<img src="${escapeHtml(tab.favicon)}" alt="" draggable="false" data-letter="${letter}">`;
+  else icon = `<span class="tl-letter">${letter}</span>`;
+  const sub = tlSubtitle(tab.url);
+  return `<div class="tl-row${tab.active ? ' active' : ''}" role="option" aria-selected="${!!tab.active}" data-id="${escapeHtml(tab.id)}">
+    <span class="tl-ico">${icon}</span>
+    <span class="tl-text"><span class="tl-title">${escapeHtml(title)}</span>${sub ? `<small>${escapeHtml(sub)}</small>` : ''}</span>
+    <button type="button" class="tl-close" data-tl-close="${escapeHtml(tab.id)}" tabindex="-1" title="Close tab" aria-label="Close tab">${window.fa ? window.fa('close') : '×'}</button>
+  </div>`;
+}
+function tlHighlight(scroll) {
+  const rows = tlRows.querySelectorAll('.tl-row');
+  TL.sel = rows.length ? Math.max(0, Math.min(TL.sel, rows.length - 1)) : 0;
+  rows.forEach((row, i) => row.classList.toggle('sel', i === TL.sel));
+  if (scroll) rows[TL.sel]?.scrollIntoView({ block: 'nearest' });
+}
+function renderTabList() {
+  if (!TL.open) return;
+  const all = orderedTabs(); const rows = tlVisibleTabs(); const q = tlInput.value.trim();
+  const sig = `${q}|${all.length}|${rows.map((tab) => [tab.id, tab.title, tab.url, tab.favicon || '', tab.active ? 1 : 0].join('\u0001')).join('\u0002')}`;
+  if (sig === TL.sig) return;
+  TL.sig = sig; TL.ids = rows.map((tab) => tab.id);
+  const scroll = tlRows.scrollTop;
+  tlRows.innerHTML = rows.length ? rows.map(tlRowHtml).join('') : `<div class="tl-empty">No open tabs match “${escapeHtml(q)}”</div>`;
+  tlRows.scrollTop = scroll;
+  $('tl-foot').textContent = q ? `${rows.length} of ${all.length} tabs` : `${all.length} open tab${all.length === 1 ? '' : 's'}`;
+  tlHighlight(false);
+}
+function positionTabList() {
+  const margin = 8;
+  const anchor = tlBtn.hidden ? $('newtab') : tlBtn;
+  const rect = anchor.getBoundingClientRect();
+  const top = rect.bottom + 6;
+  tlEl.style.maxHeight = `${Math.max(160, Math.min(540, window.innerHeight - top - margin))}px`;
+  const width = tlEl.offsetWidth;
+  tlEl.style.left = `${Math.max(margin, Math.min(rect.right - width, window.innerWidth - width - margin))}px`;
+  tlEl.style.top = `${top}px`;
+}
+function openTabList() {
+  if (TL.open) return;
+  if (typeof closeContextMenu === 'function') closeContextMenu();
+  if (typeof DM !== 'undefined' && DM.open && typeof closeDriftMenu === 'function') closeDriftMenu();
+  TL.open = true; TL.sig = ''; tlInput.value = '';
+  tlEl.classList.remove('hidden'); tlBtn.classList.add('menu-open'); tlBtn.setAttribute('aria-expanded', 'true');
+  TL.sel = Math.max(0, orderedTabs().findIndex((tab) => tab.active));
+  renderTabList(); tlHighlight(false); positionTabList();
+  syncOverlay(true);
+  tlInput.focus();
+  setTimeout(() => { if (TL.open) tlInput.focus(); }, 60);
+  tlRows.querySelector('.tl-row.active')?.scrollIntoView({ block: 'center' });
+}
+function closeTabList() {
+  if (!TL.open) return;
+  TL.open = false;
+  tlEl.classList.add('hidden'); tlBtn.classList.remove('menu-open'); tlBtn.setAttribute('aria-expanded', 'false');
+  syncOverlay();
+}
+function tlActivate(id) {
+  const tab = (state.tabs || []).find((item) => String(item.id) === String(id));
+  closeTabList();
+  if (tab) drift.cmd('activate', tab.id);
+}
+tlBtn.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); TL.open ? closeTabList() : openTabList(); });
+tlInput.addEventListener('input', () => { TL.sel = 0; renderTabList(); tlHighlight(false); });
+tlRows.addEventListener('click', (event) => {
+  const closeBtn = event.target.closest('[data-tl-close]');
+  if (closeBtn) {
+    event.stopPropagation();
+    const tab = (state.tabs || []).find((item) => String(item.id) === closeBtn.dataset.tlClose);
+    if (tab) drift.cmd('close', tab.id);
+    return;
+  }
+  const row = event.target.closest('.tl-row');
+  if (row) tlActivate(row.dataset.id);
+});
+tlRows.addEventListener('pointermove', (event) => {
+  const row = event.target.closest('.tl-row');
+  if (!row || row.classList.contains('sel')) return;
+  TL.sel = Array.from(tlRows.querySelectorAll('.tl-row')).indexOf(row); tlHighlight(false);
+});
+tlRows.addEventListener('error', (event) => {
+  const img = event.target;
+  if (img?.tagName !== 'IMG') return;
+  const span = document.createElement('span'); span.className = 'tl-letter'; span.textContent = img.dataset.letter || '?';
+  img.replaceWith(span);
+}, true);
+document.addEventListener('pointerdown', (event) => {
+  if (TL.open && !event.target.closest('#tab-list, #tab-list-btn')) closeTabList();
+}, true);
+document.addEventListener('keydown', (event) => {
+  if (!TL.open) return;
+  const count = tlRows.querySelectorAll('.tl-row').length;
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeTabList(); }
+  else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault(); event.stopPropagation();
+    if (count) { TL.sel = (TL.sel + (event.key === 'ArrowDown' ? 1 : -1) + count) % count; tlHighlight(true); }
+  } else if (event.key === 'Enter' && !event.isComposing) {
+    event.preventDefault(); event.stopPropagation();
+    if (TL.ids[TL.sel] !== undefined) tlActivate(TL.ids[TL.sel]);
+  } else if (event.key === 'Tab') { event.preventDefault(); tlInput.focus(); }
+}, true);
+window.addEventListener('resize', () => { if (TL.open) positionTabList(); });
 
 function makeBookmarkButton(bookmark) {
   const button = document.createElement('button');
@@ -175,8 +582,8 @@ function applySettings() {
   if ($('window-version')) $('window-version').textContent = (state.version || '1.3.0').split('.').slice(0, 2).join('.');
   if ($('win-maximize')) {
     $('win-maximize').innerHTML = state.isMaximized
-      ? '<svg viewBox="0 0 24 24"><path d="M8 8V5h11v11h-3M5 8h11v11H5z"/></svg>'
-      : '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx=".5"/></svg>';
+      ? '<svg data-fa="restore"></svg>'
+      : '<svg data-fa="square"></svg>';
     $('win-maximize').title = state.isMaximized ? 'Restore' : 'Maximize';
     $('win-maximize').setAttribute('aria-label', state.isMaximized ? 'Restore window' : 'Maximize window');
   }
@@ -193,10 +600,10 @@ function switchSetting(id, checked) {
   return `<label class="switch-wrap page-switch"><input id="${id}" type="checkbox" ${checked ? 'checked' : ''}><span class="switch-track"></span></label>`;
 }
 const STARTUP_OPTIONS = [
-  ['newtab', 'Open the New Tab page', 'Start fresh with a clean tab.', '<svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M12 9.5v5M9.5 12h5"/></svg>'],
-  ['previous', 'Continue where you left off', 'Reopen the tabs from your last session.', '<svg viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3.5 8.5"/><path d="M3.5 3.5v5h5M12 7.8V12l3 1.8"/></svg>'],
-  ['specific', 'Open specific pages', 'Always start with the pages you choose.', '<svg viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>'],
-  ['homepage', 'Open your home page', 'Start on a single page you pick below.', '<svg viewBox="0 0 24 24"><path d="M3.5 11.2 12 4l8.5 7.2"/><path d="M5.8 9.8V20h12.4V9.8"/><path d="M10 20v-5.5h4V20"/></svg>']
+  ['newtab', 'Open the New Tab page', 'Start fresh with a clean tab.', '<svg data-fa="newtab"></svg>'],
+  ['previous', 'Continue where you left off', 'Reopen the tabs from your last session.', '<svg data-fa="history"></svg>'],
+  ['specific', 'Open specific pages', 'Always start with the pages you choose.', '<svg data-fa="list"></svg>'],
+  ['homepage', 'Open your home page', 'Start on a single page you pick below.', '<svg data-fa="home"></svg>']
 ];
 function looksLikeUrl(value) {
   const text = String(value || '').trim();
@@ -204,7 +611,7 @@ function looksLikeUrl(value) {
   return /^about:blank$/i.test(text) || /^https?:\/\/[^/]+/i.test(text) || /^localhost(?::\d+)?(?:[/?#]|$)/i.test(text) || /^[^/\s]+\.[^/\s.]{2,}(?::\d+)?(?:[/?#]|$)/.test(text);
 }
 function startupOptionsMarkup(prefs) {
-  const mode = STARTUP_OPTIONS.some(([id]) => id === prefs.startupMode) ? prefs.startupMode : 'previous';
+  const mode = STARTUP_OPTIONS.some(([id]) => id === prefs.startupMode) ? prefs.startupMode : 'newtab';
   const pages = Array.isArray(prefs.startupPages) ? prefs.startupPages : [];
   const cards = STARTUP_OPTIONS.map(([id, title, hint, icon]) => {
     const detail = id === 'homepage'
@@ -253,7 +660,8 @@ function renderSettingsContent() {
         ['Interface mode', 'Light, dark, or follow your operating system automatically.', modePickerMarkup(prefs.appearance || 'system'), 'mode-card'],
         ['Color theme', 'An accent palette for tabs, controls, highlights, and browser pages.',
           `<div class="theme-picker-block"><div class="theme-grid">${COLOR_THEMES.map((theme) => `<button type="button" class="theme-option ${((prefs.colorTheme || 'violet') === theme.id) ? 'selected' : ''}" data-color-theme="${theme.id}" aria-pressed="${(prefs.colorTheme || 'violet') === theme.id}" title="${theme.name} theme"><span class="theme-preview theme-preview-${theme.id}"><i></i><i></i><i></i></span><span class="theme-option-name">${theme.name}</span>${(prefs.colorTheme || 'violet') === theme.id ? '<span class="theme-check">✓</span>' : ''}</button>`).join('')}</div></div>`],
-        ['Toolbar', '', settingRow('Bookmarks bar', 'Keep favorite websites one click below the address bar.', switchSetting('show-bookmarks-setting', prefs.showBookmarksBar !== false))]
+        ['Toolbar', '', settingRow('Bookmarks bar', 'Keep favorite websites one click below the address bar.', switchSetting('show-bookmarks-setting', prefs.showBookmarksBar !== false))],
+        ['Pinned tools', 'Choose which tools sit next to the address bar and the order they appear in.', pinSettingsMarkup(), 'pin-card']
       ]
     },
     newtab: {
@@ -287,8 +695,8 @@ function renderSettingsContent() {
       ].join('')
     },
     about: {
-      title: 'About Drift', intro: 'Browser build and runtime information.', body: `
-        <div class="about-page-card"><img src="../shared/assets/drift-mark.svg" alt=""><div><strong>Drift ${escapeHtml(state.version || '1.3.0')}</strong><small>A focused browser built for fast, comfortable browsing.</small><small>Electron ${escapeHtml(state.electronVersion || '—')} · Chromium ${escapeHtml(state.chromiumVersion || '—')}</small></div><span class="version-status">Installed build</span></div>
+      title: 'About Drift Browser', intro: 'Browser build and runtime information.', body: `
+        <div class="about-page-card"><img src="../shared/assets/drift-mark.svg" alt=""><div><strong>Drift Browser ${escapeHtml(state.version || '1.3.0')}</strong><small>A focused browser built for fast, comfortable browsing.</small><small>Electron ${escapeHtml(state.electronVersion || '—')} · Chromium ${escapeHtml(state.chromiumVersion || '—')}</small></div><span class="version-status">Installed build</span></div>
         <div class="settings-inline-card profile-location-card"><div><strong>Browser profile location</strong><small class="profile-path">${escapeHtml(state.profileDirectory || 'AppData/Drift')}</small><small>Settings, bookmarks, history, session data, and installed extensions are stored here.</small></div><button class="small-action" data-action="open-profile-folder">Open folder</button></div>
         <p class="page-muted-copy">Drift uses the Chromium engine through Electron. Extensions are copied into your Drift profile so they remain available after the original folder is moved.</p>`
     }
@@ -307,7 +715,7 @@ function renderBookmarksPage() {
   const folders = [...new Set((state.bookmarks || []).map((bookmark) => bookmark.folder).filter(Boolean))].sort();
   $('page-main').innerHTML = `
     <div class="page-heading page-heading-row"><div><span class="eyebrow">YOUR LIBRARY</span><h1>Bookmarks</h1><p>Saved pages, organized and ready whenever you need them.</p></div><button class="primary-button" data-action="focus-add-bookmark">＋ Add bookmark</button></div>
-    <div class="page-toolbar"><div class="page-search"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="7.5"/><path d="m16.4 16.4 4.2 4.2"/></svg><input id="bookmark-search" value="${escapeHtml(bookmarkFilter)}" placeholder="Search bookmarks"></div>${folders.length ? `<select id="bookmark-folder-filter" class="page-select" aria-label="Filter by bookmark folder"><option value="">All folders</option>${folders.map((folder) => `<option value="${escapeHtml(folder)}" ${bookmarkFolderFilter === folder ? 'selected' : ''}>${escapeHtml(folder)}</option>`).join('')}</select>` : ''}<span class="toolbar-count">${all.length} of ${(state.bookmarks || []).length}</span></div>
+    <div class="page-toolbar"><div class="page-search"><svg data-fa="search"></svg><input id="bookmark-search" value="${escapeHtml(bookmarkFilter)}" placeholder="Search bookmarks"></div>${folders.length ? `<select id="bookmark-folder-filter" class="page-select" aria-label="Filter by bookmark folder"><option value="">All folders</option>${folders.map((folder) => `<option value="${escapeHtml(folder)}" ${bookmarkFolderFilter === folder ? 'selected' : ''}>${escapeHtml(folder)}</option>`).join('')}</select>` : ''}<span class="toolbar-count">${all.length} of ${(state.bookmarks || []).length}</span></div>
     <form id="add-bookmark-form" class="add-bookmark-form hidden"><input id="new-bookmark-title" placeholder="Name"><input id="new-bookmark-url" type="url" placeholder="https://example.com" required><input id="new-bookmark-folder" placeholder="Folder (optional)"><button class="primary-button" type="submit">Save bookmark</button></form>
     <div class="page-card manager-card">
       ${all.length ? all.map((bookmark) => `
@@ -315,7 +723,7 @@ function renderBookmarksPage() {
           <div class="manager-favicon">${escapeHtml((bookmark.title || bookmark.url).charAt(0).toUpperCase())}</div>
           <div class="manager-fields"><input class="manager-title bookmark-title" aria-label="Bookmark title" value="${escapeHtml(bookmark.title || '')}"><input class="manager-url bookmark-url" aria-label="Bookmark URL" value="${escapeHtml(bookmark.url)}"><div class="manager-meta"><input class="bookmark-folder" aria-label="Bookmark folder" placeholder="Folder" value="${escapeHtml(bookmark.folder || '')}">${bookmark.addedAt ? `<span>Added ${formatDate(bookmark.addedAt, false)}</span>` : ''}</div></div>
           <div class="manager-actions"><button class="small-action primary-action" data-action="open-bookmark" data-url="${escapeHtml(bookmark.url)}">Open</button><button class="small-action" data-action="save-bookmark" data-url="${escapeHtml(bookmark.url)}">Save</button><button class="small-action remove-action" data-action="remove-bookmark" data-url="${escapeHtml(bookmark.url)}">Remove</button></div>
-        </div>`).join('') : `<div class="empty-state"><div class="empty-state-icon">☆</div><strong>${bookmarkFilter ? 'No matching bookmarks' : 'No bookmarks yet'}</strong><span>${bookmarkFilter ? 'Try a different search.' : 'Use the star in the address bar or add a bookmark here.'}</span></div>`}
+        </div>`).join('') : `<div class="empty-state"><div class="empty-state-icon">${STAR_SVG}</div><strong>${bookmarkFilter ? 'No matching bookmarks' : 'No bookmarks yet'}</strong><span>${bookmarkFilter ? 'Try a different search.' : 'Use the star in the address bar or add a bookmark here.'}</span></div>`}
     </div>
     <div class="page-footnote">${folders.length ? `Folders: ${folders.map(escapeHtml).join(' · ')}` : 'Tip: enter a folder name while saving to organize your bookmarks.'}</div>`;
   const form = $('add-bookmark-form');
@@ -325,9 +733,9 @@ function renderHistoryPage() {
   const history = (state.history || []).filter((entry) => `${entry.title} ${entry.url}`.toLowerCase().includes(historyFilter.toLowerCase()));
   $('page-main').innerHTML = `
     <div class="page-heading page-heading-row"><div><span class="eyebrow">YOUR ACTIVITY</span><h1>History</h1><p>Pages you have visited in Drift.</p></div><button class="secondary-button" data-action="clear-history" ${(state.history || []).length ? '' : 'disabled'}>Clear history</button></div>
-    <div class="page-toolbar"><div class="page-search"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="7.5"/><path d="m16.4 16.4 4.2 4.2"/></svg><input id="history-search" value="${escapeHtml(historyFilter)}" placeholder="Search history"></div><span class="toolbar-count">${history.length} visits</span></div>
+    <div class="page-toolbar"><div class="page-search"><svg data-fa="search"></svg><input id="history-search" value="${escapeHtml(historyFilter)}" placeholder="Search history"></div><span class="toolbar-count">${history.length} visits</span></div>
     <div class="page-card manager-card">${history.length ? history.map((entry) => `
-      <div class="manager-row history-manager-row"><div class="history-date">${escapeHtml(formatDate(entry.visitedAt || 0))}</div><div class="manager-fields"><strong>${escapeHtml(entry.title || entry.url)}</strong><span class="manager-url-text">${escapeHtml(entry.url)}</span></div><div class="manager-actions"><button class="small-action primary-action" data-action="open-history" data-url="${escapeHtml(entry.url)}">Open</button><button class="small-action remove-action" data-action="remove-history" data-id="${escapeHtml(entry.id || '')}" title="Remove this visit">Remove</button></div></div>`).join('') : `<div class="empty-state"><div class="empty-state-icon">◷</div><strong>${historyFilter ? 'No matching pages' : 'Your history is empty'}</strong><span>${historyFilter ? 'Try a different search.' : 'Pages you visit will appear here.'}</span></div>`}</div>`;
+      <div class="manager-row history-manager-row"><div class="history-date">${escapeHtml(formatDate(entry.visitedAt || 0))}</div><div class="manager-fields"><strong>${escapeHtml(entry.title || entry.url)}</strong><span class="manager-url-text">${escapeHtml(entry.url)}</span></div><div class="manager-actions"><button class="small-action primary-action" data-action="open-history" data-url="${escapeHtml(entry.url)}">Open</button><button class="small-action remove-action" data-action="remove-history" data-id="${escapeHtml(entry.id || '')}" title="Remove this visit">Remove</button></div></div>`).join('') : `<div class="empty-state"><div class="empty-state-icon"><svg data-fa="history"></svg></div><strong>${historyFilter ? 'No matching pages' : 'Your history is empty'}</strong><span>${historyFilter ? 'Try a different search.' : 'Pages you visit will appear here.'}</span></div>`}</div>`;
 }
 function renderDownloadsPage() {
   const downloads = state.downloads || [];
@@ -340,39 +748,39 @@ function renderDownloadsPage() {
       const terminal = isCompleted(download);
       const paused = download.state === 'paused';
       const status = complete ? 'Completed' : paused ? 'Paused' : download.state === 'cancelled' ? 'Cancelled' : download.state === 'interrupted' ? 'Interrupted' : 'Downloading';
-      return `<div class="manager-row download-row"><div class="download-file-icon"><svg viewBox="0 0 24 24"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v6h5M9 14h6M9 17h6"/></svg></div><div class="manager-fields"><strong>${escapeHtml(download.filename || 'Download')}</strong><span class="manager-url-text">${escapeHtml(download.url || '')}</span><div class="download-progress-meta"><span>${status} · ${formatBytes(received)}${total ? ` of ${formatBytes(total)}` : ''}</span><span>${complete ? '100%' : total ? `${progress}%` : ''}</span></div>${!isCompleted(download) ? `<progress class="download-progress ${total ? '' : 'indeterminate'}" ${total ? `value="${received}" max="${total}"` : ''} aria-label="Download progress"></progress>` : ''}<small class="download-date">${formatDate(download.startedAt)}</small></div><div class="manager-actions download-actions">${complete ? `<button class="small-action primary-action" data-action="download-open" data-id="${escapeHtml(download.id)}">Open</button>` : !terminal ? `<button class="small-action" data-action="download-${paused ? 'resume' : 'pause'}" data-id="${escapeHtml(download.id)}">${paused ? 'Resume' : 'Pause'}</button><button class="small-action remove-action" data-action="download-cancel" data-id="${escapeHtml(download.id)}">Cancel</button>` : ''}${download.savePath ? `<button class="small-action" data-action="download-show" data-id="${escapeHtml(download.id)}">Show</button>` : ''}</div></div>`;
-    }).join('') : `<div class="empty-state"><div class="empty-state-icon">↓</div><strong>No downloads yet</strong><span>Files you download will appear here with their progress and save location.</span></div>`}</div>`;
+      return `<div class="manager-row download-row"><div class="download-file-icon"><svg data-fa="file"></svg></div><div class="manager-fields"><strong>${escapeHtml(download.filename || 'Download')}</strong><span class="manager-url-text">${escapeHtml(download.url || '')}</span><div class="download-progress-meta"><span>${status} · ${formatBytes(received)}${total ? ` of ${formatBytes(total)}` : ''}</span><span>${complete ? '100%' : total ? `${progress}%` : ''}</span></div>${!isCompleted(download) ? `<progress class="download-progress ${total ? '' : 'indeterminate'}" ${total ? `value="${received}" max="${total}"` : ''} aria-label="Download progress"></progress>` : ''}<small class="download-date">${formatDate(download.startedAt)}</small></div><div class="manager-actions download-actions">${complete ? `<button class="small-action primary-action" data-action="download-open" data-id="${escapeHtml(download.id)}">Open</button>` : !terminal ? `<button class="small-action" data-action="download-${paused ? 'resume' : 'pause'}" data-id="${escapeHtml(download.id)}">${paused ? 'Resume' : 'Pause'}</button><button class="small-action remove-action" data-action="download-cancel" data-id="${escapeHtml(download.id)}">Cancel</button>` : ''}${download.savePath ? `<button class="small-action" data-action="download-show" data-id="${escapeHtml(download.id)}">Show</button>` : ''}</div></div>`;
+    }).join('') : `<div class="empty-state"><div class="empty-state-icon"><svg data-fa="download"></svg></div><strong>No downloads yet</strong><span>Files you download will appear here with their progress and save location.</span></div>`}</div>`;
 }
 function renderExtensionsPage() {
   const extensions = state.extensions || [];
   $('page-main').innerHTML = `
     <div class="page-heading page-heading-row"><div><span class="eyebrow">BROWSER TOOLS</span><h1>Extensions</h1><p>Add Chrome-compatible extensions to customize your browsing experience.</p></div><div class="manager-actions"><button class="small-action" data-action="browse-web-store">Browse Web Store</button><button class="small-action" data-action="install-extension">＋ Install unpacked</button><button class="primary-button" data-action="open-store-dialog">Add from Chrome Web Store</button></div></div>
-    <div class="extension-notice"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7h.01"/></svg><span>Drift installs extensions from the Chrome Web Store (updated automatically) or from an unpacked folder containing <code>manifest.json</code>. Manifest V3 extensions are supported from the store; Electron implements only part of the Chrome extension API, so some extensions may not work fully.</span></div>
+    <div class="extension-notice"><svg data-fa="info"></svg><span>Drift installs extensions from the Chrome Web Store (updated automatically) or from an unpacked folder containing <code>manifest.json</code>. Manifest V3 extensions are supported from the store; Electron implements only part of the Chrome extension API, so some extensions may not work fully.</span></div>
     <div class="page-card manager-card">${extensions.length ? extensions.map((extension) => `
-      <div class="manager-row extension-row"><div class="extension-mark">${escapeHtml((extension.name || 'E').charAt(0).toUpperCase())}</div><div class="manager-fields"><strong>${escapeHtml(extension.name)}</strong><span class="manager-url-text">${escapeHtml(extension.description || 'No description provided.')}</span><div class="manager-meta"><span>Version ${escapeHtml(extension.version || '—')}</span><span>${extension.source === 'chrome-web-store' ? 'Chrome Web Store' : 'Unpacked'}</span><span>${escapeHtml(extension.id || '')}</span></div></div><div class="manager-actions"><button class="small-action remove-action" data-action="remove-extension" data-id="${escapeHtml(extension.id)}">Remove</button></div></div>`).join('') : `<div class="empty-state"><div class="empty-state-icon">◇</div><strong>No extensions installed</strong><span>Add one from the Chrome Web Store or install an unpacked extension folder.</span></div>`}</div>
+      <div class="manager-row extension-row"><div class="extension-mark">${escapeHtml((extension.name || 'E').charAt(0).toUpperCase())}</div><div class="manager-fields"><strong>${escapeHtml(extension.name)}</strong><span class="manager-url-text">${escapeHtml(extension.description || 'No description provided.')}</span><div class="manager-meta"><span>Version ${escapeHtml(extension.version || '—')}</span><span>${extension.source === 'chrome-web-store' ? 'Chrome Web Store' : 'Unpacked'}</span><span>${escapeHtml(extension.id || '')}</span></div></div><div class="manager-actions"><button class="small-action remove-action" data-action="remove-extension" data-id="${escapeHtml(extension.id)}">Remove</button></div></div>`).join('') : `<div class="empty-state"><div class="empty-state-icon"><svg data-fa="puzzle"></svg></div><strong>No extensions installed</strong><span>Add one from the Chrome Web Store or install an unpacked extension folder.</span></div>`}</div>
     <div class="page-footnote">Only install extensions from sources you trust. Extensions may be able to read and modify website data according to their permissions.</div>`;
 }
 function pageNavigation() {
   const icons = {
-    settings: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.3 13.5a7.7 7.7 0 0 0 0-3l1.4-1.1-1.6-2.8-1.7.7a7.3 7.3 0 0 0-2.5-1.4L14.7 4h-3.4l-.2 1.9a7.3 7.3 0 0 0-2.5 1.4l-1.7-.7-1.6 2.8 1.4 1.1a7.7 7.7 0 0 0 0 3l-1.4 1.1 1.6 2.8 1.7-.7a7.3 7.3 0 0 0 2.5 1.4l.2 1.9h3.4l.2-1.9a7.3 7.3 0 0 0 2.5-1.4l1.7.7 1.6-2.8z"/></svg>',
-    bookmarks: '<svg viewBox="0 0 24 24"><path d="M6 4.5A2.5 2.5 0 0 1 8.5 2H19v19l-6.5-3.8L6 21z"/></svg>',
-    history: '<svg viewBox="0 0 24 24"><path d="M3.5 11.5A8.5 8.5 0 1 1 5 17.1"/><path d="M3 4v5h5M12 7v5l3 2"/></svg>',
-    downloads: '<svg viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5"/><path d="M4 17v3h16v-3"/></svg>',
-    extensions: '<svg viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v4h3a2 2 0 1 1 0 4H3v4a2 2 0 0 0 2 2h4v-3a3 3 0 1 1 6 0v3h3a2 2 0 0 0 2-2v-4h-3a2 2 0 1 1 0-4h3V5a2 2 0 0 0-2-2h-4v3a3 3 0 1 1-6 0z"/></svg>',
-    general: '<svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg>',
-    appearance: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z"/></svg>',
-    newtab: '<svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M3.5 9.5h17M12 12.2v4.6M9.7 14.5h4.6"/></svg>',
-    search: '<svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="7.3"/><path d="m16.2 16.2 4.3 4.3"/></svg>',
-    privacy: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>',
-    about: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7h.01"/></svg>'
+    settings: '<svg data-fa="gear"></svg>',
+    bookmarks: '<svg data-fa="bookmarkFill"></svg>',
+    history: '<svg data-fa="history"></svg>',
+    downloads: '<svg data-fa="download"></svg>',
+    extensions: '<svg data-fa="puzzle"></svg>',
+    general: '<svg data-fa="sliders"></svg>',
+    appearance: '<svg data-fa="palette"></svg>',
+    newtab: '<svg data-fa="newtab"></svg>',
+    search: '<svg data-fa="search"></svg>',
+    privacy: '<svg data-fa="shield"></svg>',
+    about: '<svg data-fa="info"></svg>'
   };
   const links = [['settings', 'Settings'], ['bookmarks', 'Bookmarks'], ['history', 'History'], ['downloads', 'Downloads'], ['extensions', 'Extensions']];
   const settingsLinks = [['general','General'],['appearance','Appearance'],['newtab','New tab'],['search','Search'],['privacy','Privacy'],['downloads','Downloads'],['about','About']];
   const subnav = state.internalPage === 'settings' ? `<div class="sidebar-caption settings-caption">SETTINGS</div><nav class="page-nav settings-subnav">${settingsLinks.map(([key,label]) => `<button class="page-nav-item setting-nav-item ${currentSettingsSection === key ? 'active' : ''}" data-setting-section="${key}"><span class="page-nav-icon">${icons[key]}</span>${label}</button>`).join('')}</nav>` : '';
-  return `<div class="page-sidebar-brand"><img src="../shared/assets/drift-mark.svg" alt=""><div><strong>Drift</strong><small>Browser</small></div></div>
+  return `<div class="page-sidebar-brand"><img src="../shared/assets/drift-mark.svg" alt=""><div class="brand-lockup"><span class="wm" role="img" aria-label="Drift">Dr<span class="wm-i" aria-hidden="true">ı</span>ft</span><div class="brand-sub"><span>Browser</span></div></div></div>
     <div class="sidebar-caption">LIBRARY & PREFERENCES</div>
     <nav class="page-nav">${links.map(([page, label]) => `<button class="page-nav-item ${state.internalPage === page ? 'active' : ''}" data-page="${page}"><span class="page-nav-icon">${icons[page]}</span>${label}</button>`).join('')}</nav>${subnav}
-    <div class="sidebar-bottom"><span>Drift ${escapeHtml(state.version || '1.3.0')}</span><small>Changes save automatically</small></div>`;
+    <div class="sidebar-bottom"><span class="ver">Drift Browser ${escapeHtml(state.version || '1.3.0')}</span><small>Changes save automatically</small></div>`;
 }
 function currentPageRenderKey() {
   const page = state.internalPage || '';
@@ -390,6 +798,8 @@ function renderInternalPage(force = false) {
   if (!page) { lastPageRenderKey = ''; return; }
   const key = currentPageRenderKey();
   if (!force && key === lastPageRenderKey && $('page-main').childElementCount) return;
+  // Never rebuild the page under a text box the person is typing in (home page autosave).
+  if (!force && page === 'settings' && document.activeElement?.id === 'homepage-setting' && $('page-main').childElementCount) { lastPageRenderKey = key; return; }
   lastPageRenderKey = key;
   $('page-sidebar').innerHTML = pageNavigation();
   if (page === 'settings') renderSettingsContent();
@@ -475,11 +885,26 @@ async function submitClearData() {
   await showAlert(summarizeCleared(result.cleared), 'Browsing data cleared');
 }
 
+// One owner for "lift the browser chrome above the page". Dialogs, the right-click menu and the
+// three-dot menu each need it; it is dropped only when NONE of them is still open, so closing one
+// can never leave another clipped underneath the page.
+let overlayLifted = false;
+function overlayNeeded() {
+  return !!document.querySelector('.dialog-overlay:not(.hidden)')
+    || !contextMenu.classList.contains('hidden')
+    || TL.open
+    || (typeof DM !== 'undefined' && DM.open);
+}
+function syncOverlay(forceOpen = false) {
+  const need = overlayNeeded();
+  if (need) { if (forceOpen || !overlayLifted) drift.cmd('overlay-open'); overlayLifted = true; }
+  else if (overlayLifted) { overlayLifted = false; drift.cmd('overlay-close'); }
+}
 function openDialog(id) {
   $(id).classList.remove('hidden');
   document.body.classList.add('dialog-open');
   if (id === 'adblockDialog') renderProtection();
-  drift.cmd('overlay-open');
+  syncOverlay(true);
 }
 function closeDialog(id) {
   const hook = dialogCloseHooks[id];
@@ -487,8 +912,8 @@ function closeDialog(id) {
   $(id).classList.add('hidden');
   if (![...document.querySelectorAll('.dialog-overlay')].some((element) => !element.classList.contains('hidden'))) {
     document.body.classList.remove('dialog-open');
-    drift.cmd('overlay-close');
   }
+  syncOverlay();
   if (hook) hook();
 }
 function visibleDialogs() {
@@ -582,8 +1007,8 @@ const extConfirmQueue = [];
 let extConfirm = null;
 function permissionIcon(level) {
   return level === 'broad'
-    ? '<svg viewBox="0 0 24 24"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4.5M12 17.5h.01"/></svg>'
-    : '<svg viewBox="0 0 24 24"><path d="m5 12.5 4.2 4.2L19 7"/></svg>';
+    ? '<svg data-fa="warn"></svg>'
+    : '<svg data-fa="check"></svg>';
 }
 function presentExtensionConfirm(info) {
   extConfirm = info;
@@ -645,6 +1070,7 @@ drift.on('focus-address', () => { $('addr').focus(); $('addr').select(); });
 // New tab page took focus: empty the address bar and drop its focus/selection.
 drift.on('reset-address', () => { $('addr').value = ''; $('addr').blur(); });
 drift.on('clear-data:show', () => openClearData());
+drift.on('tabs:search', () => (TL.open ? closeTabList() : openTabList()));
 drift.on('find:show', () => {
   if (!state.find) state.find = {};
   state.find.visible = true; renderFind(); $('find-input').focus(); $('find-input').select();
@@ -704,6 +1130,15 @@ $('page-sidebar').addEventListener('click', (event) => {
   const button = event.target.closest('[data-page]');
   if (!button) return;
   drift.cmd('go', `drift://${button.dataset.page}`);
+});
+let homepageSaveTimer = 0;
+$('page-main').addEventListener('input', (event) => {
+  if (event.target.id !== 'homepage-setting') return;
+  const value = event.target.value.trim();
+  event.target.classList.toggle('invalid', !!value && !looksLikeUrl(value));
+  clearTimeout(homepageSaveTimer);
+  if (value && !looksLikeUrl(value)) return;
+  homepageSaveTimer = setTimeout(() => saveSetting({ homepage: value }), 450);
 });
 $('page-main').addEventListener('change', (event) => {
   const id = event.target.id;
@@ -829,9 +1264,13 @@ $('page-main').addEventListener('click', async (event) => {
 // Electron main process; these menus cover tabs, bookmarks, and browser chrome.
 const contextMenu = $('browser-context-menu');
 function closeContextMenu() {
+  const wasOpen = !contextMenu.classList.contains('hidden');
   contextMenu.classList.add('hidden');
   contextMenu.replaceChildren();
   contextTarget = null;
+  // Menus are lifted above the page view while open so they are never clipped; the lift is only
+  // dropped when no dialog or three-dot menu still needs it.
+  if (wasOpen) syncOverlay();
 }
 function contextItem(label, action, options = {}) {
   if (options.separator) return '<div class="context-separator" role="separator"></div>';
@@ -842,12 +1281,18 @@ function showContextMenu(event, items, target = null) {
   event.stopPropagation();
   contextTarget = target;
   contextMenu.innerHTML = items.join('');
+  contextMenu.style.maxHeight = `${Math.max(120, window.innerHeight - 16)}px`;
+  contextMenu.style.overflowY = 'auto';
   contextMenu.classList.remove('hidden');
+  syncOverlay(true);
   const margin = 8;
   const width = contextMenu.offsetWidth;
   const height = contextMenu.offsetHeight;
-  const x = Math.max(margin, Math.min(event.clientX, window.innerWidth - width - margin));
-  const y = Math.max(margin, Math.min(event.clientY, window.innerHeight - height - margin));
+  const anchorX = event.anchorRight ? event.clientX - width : event.clientX;
+  let y = event.clientY;
+  if (y + height > window.innerHeight - margin) y = Math.max(margin, event.clientY - height); // flip above the pointer when there is no room below
+  const x = Math.max(margin, Math.min(anchorX, window.innerWidth - width - margin));
+  y = Math.max(margin, Math.min(y, window.innerHeight - height - margin));
   contextMenu.style.left = `${x}px`;
   contextMenu.style.top = `${y}px`;
   contextMenu.querySelector('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });

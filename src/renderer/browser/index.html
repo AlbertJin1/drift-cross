@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Drift</title>
+<title>Drift Browser</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: https: http:; style-src 'self'; style-src-attr 'unsafe-inline'; script-src 'self'">
 <link rel="stylesheet" href="../shared/tailwind.generated.css">
@@ -13,55 +13,61 @@
     <div id="tabbar" class="flex items-center w-full min-w-0 gap-2 px-3" aria-label="Browser tabs">
       <div id="brand" class="flex items-center gap-2 shrink-0" aria-label="Drift browser">
         <img src="../shared/assets/drift-mark.svg" alt="" width="23" height="23">
-        <span class="brand-name">Drift</span><span id="window-version" class="window-version">1.1</span>
+        <span class="wm brand-name" role="img" aria-label="Drift">Dr<span class="wm-i" aria-hidden="true">ı</span>ft</span><span id="window-version" class="window-version">1.3</span>
       </div>
       <div id="tabs" class="tabs flex items-center gap-1 min-w-0" aria-label="Open tabs"></div>
       <button id="newtab" class="icon new-tab-btn shrink-0" title="New tab (Ctrl+T)" aria-label="New tab">
-        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        <svg data-fa="plus"></svg>
+      </button>
+      <button id="tab-list-btn" class="tab-list-btn shrink-0" title="Search open tabs (Ctrl+Shift+L)" aria-label="Search open tabs" aria-haspopup="dialog" aria-expanded="false" hidden>
+        <svg data-fa="down"></svg><span id="tab-list-count" class="tab-list-count">0</span>
       </button>
       <div id="tab-spacer" aria-hidden="true"></div>
       <div id="window-actions" class="window-actions items-center shrink-0" aria-label="Window controls">
-        <button id="win-minimize" class="window-action" title="Minimize" aria-label="Minimize window"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
-        <button id="win-maximize" class="window-action" title="Maximize" aria-label="Maximize window"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx=".5"/></svg></button>
-        <button id="win-close" class="window-action close-window" title="Close Drift" aria-label="Close window"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+        <button id="win-minimize" class="window-action" title="Minimize" aria-label="Minimize window"><svg data-fa="minus"></svg></button>
+        <button id="win-maximize" class="window-action" title="Maximize" aria-label="Maximize window"><svg data-fa="square"></svg></button>
+        <button id="win-close" class="window-action close-window" title="Close Drift" aria-label="Close window"><svg data-fa="close"></svg></button>
       </div>
     </div>
 
     <header id="toolbar" class="flex items-center gap-1 px-3 min-w-0">
-      <button id="back" class="icon" title="Back" aria-label="Back"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
-      <button id="forward" class="icon" title="Forward" aria-label="Forward"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg></button>
-      <button id="home" class="icon hidden" title="Home (Alt+Home)" aria-label="Home"><svg viewBox="0 0 24 24"><path d="M3.5 11.2 12 4l8.5 7.2"/><path d="M5.8 9.8V20h12.4V9.8"/><path d="M10 20v-5.5h4V20"/></svg></button>
-      <button id="reload" class="icon" title="Reload" aria-label="Reload"><svg viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9a7 7 0 0 1 11.8-2L20 12M4 12l2.6 5A7 7 0 0 0 18.4 15"/></svg></button>
+      <button id="back" class="icon" title="Back" aria-label="Back"><svg data-fa="back"></svg></button>
+      <button id="forward" class="icon" title="Forward" aria-label="Forward"><svg data-fa="forward"></svg></button>
+      <button id="home" class="icon hidden" title="Home (Alt+Home)" aria-label="Home"><svg data-fa="home"></svg></button>
+      <button id="reload" class="icon" title="Reload" aria-label="Reload"><svg data-fa="reload"></svg></button>
       <form id="omni" class="omni flex items-center gap-2 min-w-0 flex-1" autocomplete="off" role="search">
-        <svg class="address-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+        <svg data-fa="globe" class="address-mark address-globe"></svg>
+        <svg data-fa="lock" class="address-mark address-lock"></svg>
         <input id="addr" type="text" spellcheck="false" placeholder="Search or enter address" aria-label="Search or enter address">
-        <button type="button" id="star" class="icon sm" title="Bookmark this page (Ctrl+D)" aria-label="Bookmark this page"><svg viewBox="0 0 24 24"><path d="m12 2.8 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3.1-5.8 3.1 1.1-6.5-4.7-4.6 6.5-.9L12 2.8z"/></svg></button>
+        <button type="button" id="star" class="icon sm" title="Bookmark this page (Ctrl+D)" aria-label="Bookmark this page"><svg class="star-off" data-fa="star"></svg><svg class="star-on" data-fa="starFill"></svg></button>
       </form>
       <span class="toolbar-divider" aria-hidden="true"></span>
-      <button id="bookmarks-toggle" class="icon" title="Bookmarks manager (Ctrl+Shift+B)" aria-label="Open bookmarks manager"><svg viewBox="0 0 24 24"><path d="M6 4.8A2.8 2.8 0 0 1 8.8 2H20v19l-7-4-7 4z"/><path d="M6 5v16"/></svg></button>
-      <button id="history-btn" class="icon" title="History (Ctrl+H)" aria-label="History"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg></button>
-      <button id="downloads-btn" class="icon" title="Downloads (Ctrl+J)" aria-label="Downloads"><svg viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5"/><path d="M4 17v3h16v-3"/></svg></button>
-      <button id="extensions-btn" class="icon" title="Extensions (Ctrl+Shift+E)" aria-label="Extensions"><svg viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v4h3a2 2 0 1 1 0 4H3v4a2 2 0 0 0 2 2h4v-3a2 2 0 1 1 4 0v3h4a2 2 0 0 0 2-2v-4h-3a2 2 0 1 1 0-4h3V5a2 2 0 0 0-2-2h-4v3a2 2 0 1 1-4 0z"/></svg></button>
-      <button id="protection" class="protection-chip flex items-center gap-2" title="Privacy protection" aria-label="Privacy protection settings"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg><span id="blocked">0</span></button>
-      <button id="find-btn" class="icon" title="Find in page (Ctrl+F)" aria-label="Find in page"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="7.3"/><path d="m16.2 16.2 4.3 4.3M8 10.8h5.5"/></svg></button>
-      <button id="reader" class="icon" title="Reader mode (Ctrl+Shift+R)" aria-label="Reader mode"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8M8 11h8"/></svg></button>
-      <button id="palette" class="icon" title="Command palette (Ctrl+K)" aria-label="Open command palette"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m16.5 16.5 4.5 4.5M8 11h6M11 8v6"/></svg></button>
-      <button id="settings" class="icon settings-button" title="Settings (Ctrl+,)" aria-label="Open settings"><svg viewBox="0 0 24 24"><path d="M12 8.25a3.75 3.75 0 1 0 0 7.5 3.75 3.75 0 0 0 0-7.5Z"/><path d="M19.1 13.4a7.4 7.4 0 0 0 0-2.8l1.65-1.28-1.7-2.95-1.98.8a7.4 7.4 0 0 0-2.42-1.4L14.35 3h-4.7l-.3 2.77a7.4 7.4 0 0 0-2.42 1.4l-1.98-.8-1.7 2.95L4.9 10.6a7.4 7.4 0 0 0 0 2.8l-1.65 1.28 1.7 2.95 1.98-.8a7.4 7.4 0 0 0 2.42 1.4l.3 2.77h4.7l.3-2.77a7.4 7.4 0 0 0 2.42-1.4l1.98.8 1.7-2.95z"/></svg></button>
+      <button id="bookmarks-toggle" class="icon" title="Bookmarks manager (Ctrl+Shift+B)" aria-label="Open bookmarks manager"><svg data-fa="bookmark"></svg></button>
+      <button id="history-btn" class="icon" title="History (Ctrl+H)" aria-label="History"><svg data-fa="history"></svg></button>
+      <button id="downloads-btn" class="icon" title="Downloads (Ctrl+J)" aria-label="Downloads"><svg data-fa="download"></svg></button>
+      <button id="extensions-btn" class="icon" title="Extensions (Ctrl+Shift+E)" aria-label="Extensions"><svg data-fa="puzzle"></svg></button>
+      <button id="protection" class="protection-chip flex items-center gap-2" title="Privacy protection" aria-label="Privacy protection settings"><svg data-fa="shield"></svg><span id="blocked">0</span></button>
+      <button id="find-btn" class="icon" title="Find in page (Ctrl+F)" aria-label="Find in page"><svg data-fa="search"></svg></button>
+      <button id="reader" class="icon" title="Reader mode (Ctrl+Shift+R)" aria-label="Reader mode"><svg data-fa="book"></svg></button>
+      <button id="palette" class="icon" title="Command palette (Ctrl+K)" aria-label="Open command palette"><svg data-fa="terminal"></svg></button>
+      <button id="toolbar-overflow" class="icon" title="Menu" aria-label="Open menu" aria-haspopup="menu"><svg data-fa="more"></svg></button>
+      <button id="settings" class="icon settings-button" title="Settings (Ctrl+,)" aria-label="Open settings"><svg data-fa="gear"></svg></button>
     </header>
 
     <div id="bookmarksbar" class="flex items-center gap-2 min-w-0 px-3" aria-label="Bookmarks bar">
       <div id="bookmark-items" class="bookmark-items flex items-center gap-1 min-w-0 flex-1"></div>
+      <button id="bookmarks-overflow" class="bookmarks-more hidden shrink-0" title="More bookmarks" aria-label="More bookmarks" aria-haspopup="menu">»</button>
       <button id="manage-bookmarks" class="bookmarks-manage shrink-0" title="Manage bookmarks">Manage</button>
     </div>
   </div>
 
   <section id="findbar" class="findbar hidden" aria-label="Find in page">
-    <div class="find-input-wrap"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="7.5"/><path d="m16.4 16.4 4.2 4.2"/></svg><input id="find-input" type="text" placeholder="Find in page" autocomplete="off"></div>
+    <div class="find-input-wrap"><svg data-fa="search"></svg><input id="find-input" type="text" placeholder="Find in page" autocomplete="off"></div>
     <label class="find-case"><input id="find-case" type="checkbox"> Aa</label>
     <span id="find-count" class="find-count">0 / 0</span>
-    <button id="find-prev" class="icon sm" title="Previous match" aria-label="Previous match"><svg viewBox="0 0 24 24"><path d="m6 14 6-6 6 6"/></svg></button>
-    <button id="find-next" class="icon sm" title="Next match" aria-label="Next match"><svg viewBox="0 0 24 24"><path d="m6 10 6 6 6-6"/></svg></button>
-    <button id="find-close" class="icon sm" title="Close find" aria-label="Close find"><svg viewBox="0 0 24 24"><path d="m18 6-12 12M6 6l12 12"/></svg></button>
+    <button id="find-prev" class="icon sm" title="Previous match" aria-label="Previous match"><svg data-fa="up"></svg></button>
+    <button id="find-next" class="icon sm" title="Next match" aria-label="Next match"><svg data-fa="down"></svg></button>
+    <button id="find-close" class="icon sm" title="Close find" aria-label="Close find"><svg data-fa="close"></svg></button>
   </section>
 
   <main id="internalPage" class="internal-page hidden" aria-live="polite">
@@ -71,11 +77,17 @@
     </div>
   </main>
 
+  <div id="tab-list" class="tab-list hidden" role="dialog" aria-label="Open tabs">
+    <div class="tl-search"><svg data-fa="search"></svg><input id="tl-input" type="text" placeholder="Search open tabs" autocomplete="off" spellcheck="false" aria-label="Search open tabs"></div>
+    <div id="tl-rows" class="tl-rows" role="listbox" aria-label="Open tabs"></div>
+    <div id="tl-foot" class="tl-foot"></div>
+  </div>
+
   <div id="browser-context-menu" class="browser-context-menu hidden" role="menu" aria-label="Browser context menu"></div>
 
   <div id="adblockDialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="adblock-title">
     <div class="dialog-panel protection-panel">
-      <div class="dialog-heading flex items-center justify-between gap-3"><div><h2 id="adblock-title">Privacy protection</h2><p>Block known advertising and tracking hosts at the network layer.</p></div><button class="icon dialog-close" data-close="adblockDialog" title="Close" aria-label="Close protection settings"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+      <div class="dialog-heading flex items-center justify-between gap-3"><div><h2 id="adblock-title">Privacy protection</h2><p>Block known advertising and tracking hosts at the network layer.</p></div><button class="icon dialog-close" data-close="adblockDialog" title="Close" aria-label="Close protection settings"><svg data-fa="close"></svg></button></div>
       <div class="protection-setting flex items-center justify-between gap-4"><div><strong>Ads and trackers</strong><p>Applies to web requests in every tab.</p></div><label class="switch-wrap"><input id="adblock-enabled" type="checkbox"><span class="switch-track"></span><span class="sr-only">Enable ad and tracker blocking</span></label></div>
       <div class="protection-stats flex items-center justify-between gap-4"><div><span class="stat-value" id="blocked-total">0</span><span class="stat-label">requests blocked this session</span></div><button id="reset-blocked" class="secondary-button">Reset counter</button></div>
       <div class="site-exception"><div><strong id="exception-title">This website</strong><p id="exception-host">Open a website to manage its exception.</p></div><button id="site-exception-toggle" class="secondary-button" disabled>Pause on this site</button></div>
@@ -88,14 +100,14 @@
     <div class="dialog-panel ext-panel">
       <div class="dialog-heading flex items-center justify-between gap-3">
         <div class="ext-heading">
-          <span class="ext-store-badge"><svg viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v4h3a2 2 0 1 1 0 4H3v4a2 2 0 0 0 2 2h4v-3a3 3 0 1 1 6 0v3h3a2 2 0 0 0 2-2v-4h-3a2 2 0 1 1 0-4h3V5a2 2 0 0 0-2-2h-4v3a3 3 0 1 1-6 0z"/></svg></span>
+          <span class="ext-store-badge"><svg data-fa="puzzle"></svg></span>
           <div><h2 id="store-title">Add from Chrome Web Store</h2><p>Paste an extension’s Web Store link or its 32-letter ID.</p></div>
         </div>
-        <button class="icon dialog-close" data-close="storeInstallDialog" title="Close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        <button class="icon dialog-close" data-close="storeInstallDialog" title="Close" aria-label="Close"><svg data-fa="close"></svg></button>
       </div>
       <div class="ext-body">
         <label class="ext-field" for="store-input"><span>Link or extension ID</span>
-          <div class="ext-input" id="store-input-wrap"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1l1.7-1.7"/></svg>
+          <div class="ext-input" id="store-input-wrap"><svg data-fa="link"></svg>
           <input id="store-input" type="text" spellcheck="false" autocomplete="off" placeholder="https://chromewebstore.google.com/detail/…"></div>
         </label>
         <p id="store-hint" class="ext-hint">You’ll review what the extension can access before it is added.</p>
@@ -107,7 +119,7 @@
 
   <div id="clearDataDialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="clear-title">
     <div class="dialog-panel clear-panel">
-      <div class="dialog-heading flex items-center justify-between gap-3"><div><h2 id="clear-title">Clear browsing data</h2><p>Choose what to remove from this device, and how far back to go.</p></div><button class="icon dialog-close" data-close="clearDataDialog" title="Close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+      <div class="dialog-heading flex items-center justify-between gap-3"><div><h2 id="clear-title">Clear browsing data</h2><p>Choose what to remove from this device, and how far back to go.</p></div><button class="icon dialog-close" data-close="clearDataDialog" title="Close" aria-label="Close"><svg data-fa="close"></svg></button></div>
       <div class="clear-tabs" role="tablist" aria-label="Clear data mode">
         <button id="clear-tab-basic" class="clear-tab" role="tab" data-clear-tab="basic" aria-selected="true">Basic</button>
         <button id="clear-tab-advanced" class="clear-tab" role="tab" data-clear-tab="advanced" aria-selected="false">Advanced</button>
@@ -145,6 +157,10 @@
       <div class="dialog-footer ext-footer"><button id="ext-confirm-cancel" class="secondary-button">Cancel</button><button id="ext-confirm-allow" class="primary-button">Add extension</button></div>
     </div>
   </div>
+  <script src="../shared/icons.js"></script>
   <script src="ui.js"></script>
+  <script src="responsive.js"></script>
+  <script src="pins.js"></script>
+  <script src="menu.js"></script>
 </body>
 </html>

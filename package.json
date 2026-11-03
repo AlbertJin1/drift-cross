@@ -1,6 +1,6 @@
 {
   "name": "drift",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Drift \u2014 a fast, cross-platform browser with a streamlined tab strip, persistent bookmarks, privacy protection, downloads, Chrome-compatible extensions, history, configurable settings, color themes, and context menus.",
   "main": "src/main/main.js",
   "license": "MIT",
@@ -10,7 +10,9 @@
     "css:build": "tailwindcss -c tailwind.config.cjs -i ./src/renderer/shared/tailwind.css -o ./src/renderer/shared/tailwind.generated.css --minify",
     "predist": "npm run css:build",
     "dist": "electron-builder",
-    "dist:win": "npm run css:build && electron-builder --win nsis"
+    "dist:win": "npm run css:build && electron-builder --win nsis --x64 --publish never",
+    "icons:build": "node scripts/build_icons.cjs",
+    "check": "node scripts/check-project.cjs"
   },
   "dependencies": {
     "electron-chrome-web-store": "^0.13.0"
@@ -18,6 +20,9 @@
   "devDependencies": {
     "electron": "^45.0.0",
     "electron-builder": "latest",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-icons": "^5.7.0",
     "tailwindcss": "^3.4.17"
   },
   "build": {
@@ -25,7 +30,10 @@
     "productName": "Drift",
     "files": [
       "src/**/*",
-      "build/**/*",
+      "build/icon.png",
+      "build/icon.ico",
+      "build/icon.icns",
+      "build/icon.svg",
       "package.json"
     ],
     "win": {
@@ -50,14 +58,33 @@
       "icon": "build/icon.png"
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
       "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Drift",
       "runAfterFinish": true,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "Drift-Setup.${ext}",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeader": "build/installer-header.bmp",
+      "installerSidebar": "build/installer-sidebar.bmp",
+      "uninstallerSidebar": "build/installer-sidebar.bmp",
+      "include": "build/installer.nsh",
+      "warningsAsErrors": true,
+      "license": "LICENSE",
+      "menuCategory": false,
+      "displayLanguageSelector": false,
+      "installerLanguages": [
+        "en_US"
+      ],
+      "language": "1033",
+      "unicode": true,
+      "differentialPackage": true,
+      "uninstallDisplayName": "Drift Browser"
     }
   }
 }

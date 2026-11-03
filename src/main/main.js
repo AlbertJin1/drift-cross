@@ -74,7 +74,14 @@ const READER_JS = String.raw`(() => {
 
 // ---------------------------------------------------------------- storage
 const file = (f) => path.join(app.getPath('userData'), f);
-const readJson = (f, fallback) => { try { return JSON.parse(fs.readFileSync(file(f), 'utf8')); } catch { return fallback; } };
+// Reads a profile file. If the main file is missing or corrupt (power loss, crash,
+// antivirus interference) the last good copy (<file>.bak) is used before giving up.
+const readJson = (f, fallback) => {
+  for (const candidate of [file(f), `${file(f)}.bak`]) {
+    try { return JSON.parse(fs.readFileSync(candidate, 'utf8')); } catch { /* try the next copy */ }
+  }
+  return fallback;
+};
 function isPathInside(parent, candidate) {
   const relative = path.relative(path.resolve(parent), path.resolve(candidate));
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
@@ -97,15 +104,36 @@ function ensureUserDataDirectories() {
     }
   }
 }
+// Durable save: write to a temp file, flush it to disk, keep the previous good copy
+// as <file>.bak, then atomically swap. Windows can briefly refuse the rename while
+// an indexer/antivirus holds the file, so it retries and finally falls back to a
+// direct write. Returns true when the data reached disk.
 const writeJson = (f, v) => {
+  const target = file(f);
+  const temp = `${target}.${process.pid}.tmp`;
+  const data = JSON.stringify(v, null, 2);
   try {
-    fs.mkdirSync(app.getPath('userData'), { recursive: true });
-    const target = file(f);
-    const temp = `${target}.${process.pid}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(v, null, 2));
-    fs.renameSync(temp, target);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const fd = fs.openSync(temp, 'w');
+    try { fs.writeSync(fd, data); try { fs.fsyncSync(fd); } catch { /* not supported everywhere */ } } finally { fs.closeSync(fd); }
+    try { if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.bak`); } catch { /* backup is best effort */ }
+    let lastError = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try { fs.renameSync(temp, target); return true; }
+      catch (error) {
+        lastError = error;
+        const wait = Date.now() + 15 * (attempt + 1);
+        while (Date.now() < wait) { /* brief synchronous back-off */ }
+      }
+    }
+    fs.writeFileSync(target, data); // last resort: direct write
+    try { fs.unlinkSync(temp); } catch { /* ignore */ }
+    if (lastError) console.warn(`Drift saved ${f} with a direct write after rename failed:`, lastError.message);
+    return true;
   } catch (error) {
     console.error(`Drift could not save profile file ${f}:`, error?.message || error);
+    try { fs.unlinkSync(temp); } catch { /* ignore */ }
+    return false;
   }
 };
 
@@ -157,9 +185,9 @@ let appearance = 'system';
 let colorTheme = 'violet';
 let searchEngine = 'duckduckgo';
 // Startup + new-tab preferences.
-//   startupMode: newtab (fresh New Tab page) | previous (continue where you left off)
+//   startupMode: newtab (fresh New Tab page, the default) | previous (continue where you left off)
 //                | specific (open a chosen set of pages) | homepage (open the home page)
-let startupMode = 'previous';
+let startupMode = 'newtab';
 let startupPages = [];
 let homepage = '';
 let showHomeButton = false;
@@ -171,6 +199,8 @@ let launchAtLogin = false;
 let showBookmarksBar = true;
 let downloadDirectory = app.getPath('downloads');
 let askWhereToSave = false;
+// Toolbar buttons the user pinned next to the address bar, in display order.
+let toolbarPins = [];
 let blockedHostCounts = Object.create(null);
 let downloads = [];
 let downloadPersistTimer = null;
@@ -189,6 +219,12 @@ const NEWTAB_OPEN_MODES = ['newtab', 'homepage', 'blank'];
 const SHORTCUT_MODES = ['smart', 'bookmarks', 'hidden'];
 const WINDOW_START_MODES = ['default', 'maximized', 'remember'];
 const MAX_STARTUP_PAGES = 12;
+const TOOLBAR_PIN_IDS = ['bookmarks', 'history', 'downloads', 'extensions', 'privacy', 'find', 'reader', 'palette', 'print', 'devtools', 'reopen-tab', 'clear-data', 'fullscreen', 'settings'];
+// Keeps only known ids, removes duplicates, preserves the user's order.
+function cleanToolbarPins(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((id) => typeof id === 'string' && TOOLBAR_PIN_IDS.includes(id)))];
+}
 
 // Accepts "example.com", "https://example.com/x" or "about:blank"; returns '' when unusable.
 function normalizeUrlSetting(value) {
@@ -356,7 +392,7 @@ function snapshot() {
     currentHost: host,
     siteAllowed: isSiteAllowed(host),
     blockedHosts: Object.entries(blockedHostCounts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([hostName, count]) => ({ host: hostName, count })),
-    settings: { appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, showBookmarksBar, downloadDirectory, askWhereToSave },
+    settings: { appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins },
     canLaunchAtLogin: process.platform !== 'linux',
     profileDirectory: app.getPath('userData'),
     extensionsDirectory: extensions.directory,
@@ -374,7 +410,7 @@ function push() {
     pushTimer = null;
     if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('state', snapshot());
     const t = activeTab();
-    const title = (t?.title || 'New tab') + ' — Drift';
+    const title = (t?.title || 'New tab') + ' — Drift Browser';
     if (win && !win.isDestroyed() && title !== lastWindowTitle) {
       lastWindowTitle = title;
       win.setTitle(title);
@@ -406,7 +442,7 @@ function sortedBookmarks() {
   return bookmarksSortedCache;
 }
 function persistBookmarks() { bookmarksSortedCache = null; writeJson('bookmarks.json', bookmarks); }
-function persistSettings() { writeJson(SETTINGS_FILE, { adBlockEnabled, allowlistedSites, appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, showBookmarksBar, downloadDirectory, askWhereToSave }); }
+function persistSettings() { return writeJson(SETTINGS_FILE, { settingsVersion: 2, adBlockEnabled, allowlistedSites, appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins }); }
 
 
 function persistDownloads(immediate = false) {
@@ -662,6 +698,7 @@ function activateTab(tab) {
   tab.lastActive = Date.now();
   if (isInternalUrl(tab.url)) {
     tab.title = internalTitle(internalPageName(tab.url));
+    tab.favicon = '';
     setUIOverlay(true);
     push();
     saveSession();
@@ -711,13 +748,15 @@ function go(text) {
   let t = activeTab();
   if (!t) { createTab(text); return; }
   if (isInternalUrl(url)) {
-    if (!isInternalUrl(t.url)) t.previousUrl = liveUrl(t) || t.url || newTabUrl();
+    if (!isInternalUrl(t.url)) { t.previousUrl = liveUrl(t) || t.url || newTabUrl(); t.webFavicon = t.favicon || ''; }
+    t.favicon = ''; // internal pages get their own tab icon; never keep the previous site's
     t.url = url;
     t.title = internalTitle(internalPageName(url));
     t.loading = false;
     activateTab(t);
     return;
   }
+  t.favicon = isInternalUrl(t.url) ? (t.webFavicon || '') : t.favicon; // leaving an internal page: restore the site icon until the new one arrives
   t.url = url; // update the address bar immediately rather than waiting for redirect events
   t.title = 'Loading…';
   t.loading = true;
@@ -733,8 +772,12 @@ function go(text) {
   setUIOverlay(false);
 }
 
-function openInternalPage(page, newTab = false) {
+// Settings, Bookmarks, History, Downloads and Extensions always open in their own tab.
+// If that page is already open in a tab, switch to it instead of piling up duplicates.
+function openInternalPage(page, newTab = true) {
   const target = `drift://${page}`;
+  const existing = cur.tabs.find((t) => internalPageName(t.url) === page);
+  if (existing) { activateTab(existing); return; }
   if (newTab || !activeTab()) createTab(target);
   else go(target);
 }
@@ -845,14 +888,11 @@ function focusAddress() {
   ui?.webContents.send('focus-address');
 }
 
-// A fresh tab: empty the address bar and hand focus to the page's own search
-// box (newtab.js focuses it on load). Pages that have no input of their own
-// (a blank page or a custom home page) still get the address bar, like Chrome.
+// A fresh tab: empty the address bar and focus it so you can type right away.
 function focusNewTab(tab) {
-  if (tab && isNewTabUrl(tab.url)) {
-    ui?.webContents.send('reset-address');
-    if (!paletteOpen) tab.view?.webContents.focus();
-  } else focusAddress();
+  // Always put the cursor in the address bar at the top (never in the New Tab page's own search box).
+  if (tab && isNewTabUrl(tab.url)) ui?.webContents.send('reset-address'); // empty it, then focus below
+  focusAddress();
 }
 
 ipcMain.handle('palette:query', (_e, query) => {
@@ -940,6 +980,21 @@ function command(name, arg) {
     case 'new': createTab(arg); break;
     case 'close': { const target = arg ? cur.tabs.find((x) => x.id === arg) : t; if (target) closeTab(target); break; }
     case 'activate': { const target = cur.tabs.find((x) => x.id === arg); if (target) activateTab(target); break; }
+    case 'move-tab': {
+      // Drag-reorder from the tab strip: { id, index } moves a tab to a new slot.
+      const { id, index } = (arg && typeof arg === 'object') ? arg : {};
+      const from = cur.tabs.findIndex((x) => x.id === id);
+      if (from < 0) break;
+      const to = Math.max(0, Math.min(cur.tabs.length - 1, Math.trunc(Number(index)) || 0));
+      if (to !== from) {
+        const [moved] = cur.tabs.splice(from, 1);
+        cur.tabs.splice(to, 0, moved);
+        saveSession();
+      }
+      push();
+      break;
+    }
+    case 'tab-search': ui?.webContents.focus(); ui?.webContents.send('tabs:search'); break;
     case 'next-tab': if (cur.tabs.length > 1) activateTab(cur.tabs[(cur.tabs.indexOf(t) + 1 + cur.tabs.length) % cur.tabs.length]); break;
     case 'previous-tab': if (cur.tabs.length > 1) activateTab(cur.tabs[(cur.tabs.indexOf(t) - 1 + cur.tabs.length) % cur.tabs.length]); break;
     case 'go': go(arg); break;
@@ -1018,6 +1073,23 @@ function command(name, arg) {
     case 'address': focusAddress(); break;
   }
 }
+// Lightweight on-demand data for the toolbar menu's submenus (recent items, zoom, extensions).
+ipcMain.handle('menu:data', () => {
+  const active = activeTab();
+  const wc = active && !isInternalUrl(active.url) ? active.view?.webContents : null;
+  const level = wc && !wc.isDestroyed() ? wc.getZoomLevel() : 0;
+  return {
+    zoom: Math.round(Math.pow(1.2, level) * 100),
+    canZoom: !!wc,
+    fullscreen: !!win?.isFullScreen?.(),
+    bookmarks: bookmarks.slice(-8).reverse().map((b) => ({ title: b.title || b.url, url: b.url })),
+    history: history.slice(-8).reverse().map((h) => ({ title: h.title || h.url, url: h.url })),
+    closedTabs: closedTabs.slice(-5).reverse().map((c) => ({ title: c.title || c.url, url: c.url })),
+    downloads: downloads.slice().sort((a, b) => b.startedAt - a.startedAt).slice(0, 6)
+      .map((d) => ({ id: d.id, filename: d.filename, state: d.state, received: d.receivedBytes, total: d.totalBytes })),
+    extensions: extensions.list().map((e) => ({ id: e.id, name: e.name, version: e.version }))
+  };
+});
 ipcMain.on('cmd', (_e, name, arg) => command(name, arg));
 
 ipcMain.on('bookmark:update', (_e, url, title, newUrl, folder) => updateBookmark(String(url || ''), title, newUrl, folder));
@@ -1090,6 +1162,7 @@ ipcMain.on('settings:update', (_e, patch) => {
   if (typeof patch.askWhereToSave === 'boolean') askWhereToSave = patch.askWhereToSave;
   if (typeof patch.downloadDirectory === 'string' && patch.downloadDirectory.trim()) downloadDirectory = patch.downloadDirectory.trim();
   if (typeof patch.adBlockEnabled === 'boolean') adBlockEnabled = patch.adBlockEnabled;
+  if (Array.isArray(patch.toolbarPins)) toolbarPins = cleanToolbarPins(patch.toolbarPins);
   if (refreshNewTabs) {
     for (const tab of cur.tabs) {
       if (!isNewTabUrl(tab.url)) continue;
@@ -1230,6 +1303,7 @@ function buildMenu() {
       { type: 'separator' },
       item('Next tab', 'Ctrl+Tab', 'next-tab'),
       item('Previous tab', 'Ctrl+Shift+Tab', 'previous-tab'),
+      item('Search open tabs', 'CmdOrCtrl+Shift+L', 'tab-search'),
       item('Select tab 1–8', 'CmdOrCtrl+1', 'select-tab', 1),
       item('Select last tab', 'CmdOrCtrl+9', 'select-tab', 9)
     ]},
@@ -1374,7 +1448,9 @@ async function start() {
   colorTheme = COLOR_THEME_IDS.includes(settings.colorTheme) ? settings.colorTheme : 'violet';
   searchEngine = SEARCH_ENGINES.includes(settings.searchEngine) ? settings.searchEngine : 'duckduckgo';
   // Older builds only had a "Restore previous session" switch.
-  startupMode = STARTUP_MODES.includes(settings.startupMode) ? settings.startupMode : (settings.restoreSession === false ? 'newtab' : 'previous');
+  // Fresh installs (no saved choice) open a fresh New Tab page. Only an old build that explicitly
+  // had "restore previous session" switched on keeps that behaviour.
+  startupMode = STARTUP_MODES.includes(settings.startupMode) ? settings.startupMode : (settings.restoreSession === true ? 'previous' : 'newtab');
   startupPages = cleanStartupPages(settings.startupPages);
   homepage = normalizeUrlSetting(settings.homepage);
   showHomeButton = settings.showHomeButton === true;
@@ -1386,6 +1462,7 @@ async function start() {
   applyAppearance();
   showBookmarksBar = settings.showBookmarksBar !== false;
   askWhereToSave = settings.askWhereToSave === true;
+  toolbarPins = cleanToolbarPins(settings.toolbarPins);
   downloadDirectory = typeof settings.downloadDirectory === 'string' && settings.downloadDirectory ? settings.downloadDirectory : app.getPath('downloads');
   try { fs.mkdirSync(downloadDirectory, { recursive: true }); } catch { downloadDirectory = app.getPath('downloads'); }
   downloads = readJson('downloads.json', []);
@@ -1394,13 +1471,14 @@ async function start() {
   allowlistedSites = Array.isArray(settings.allowlistedSites)
     ? [...new Set(settings.allowlistedSites.filter((x) => typeof x === 'string' && /^[a-z0-9.-]+$/i.test(x)).map((x) => x.toLowerCase()))].slice(-300)
     : [];
+  if (!fs.existsSync(file(SETTINGS_FILE))) persistSettings(); // first run: store the defaults right away
   setupSession();
   await extensions.restore();
   buildMenu();
 
   const windowBounds = initialWindowBounds();
   win = new BaseWindow({
-    ...windowBounds, minWidth: 760, minHeight: 480, title: 'Drift', show: false,
+    ...windowBounds, minWidth: 420, minHeight: 320, title: 'Drift', show: false,
     frame: !IS_WINDOWS, resizable: true, maximizable: true, minimizable: true, closable: true,
     icon: path.join(ROOT_DIR, 'build', 'icon.png'),
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#11131b' : '#f5f6fa'
@@ -1423,6 +1501,12 @@ async function start() {
   await ui.webContents.loadFile(path.join(RENDERER_DIR, 'browser', 'index.html'));
 
   win.on('resize', layout);
+  // Re-layout on every state change that can alter the content size, not just drag-resizes.
+  for (const evt of ['maximize', 'unmaximize', 'restore', 'enter-full-screen', 'leave-full-screen', 'resized', 'moved']) win.on(evt, layout);
+  const relayout = () => { if (win && !win.isDestroyed()) layout(); };
+  screen.on('display-metrics-changed', relayout);
+  screen.on('display-added', relayout);
+  screen.on('display-removed', relayout);
   win.on('resize', scheduleWindowState);
   win.on('move', scheduleWindowState);
   win.on('maximize', () => { push(); scheduleWindowState(); });
@@ -1468,6 +1552,8 @@ async function start() {
     if (isNewTabUrl(initialTab.url)) focusNewTab(initialTab);
   } else createTab();
   win.show();
+  // Focus requested before the window was visible can be dropped, so ask again once it is shown.
+  if (cur.active && isNewTabUrl(cur.active.url)) setTimeout(() => { if (win && !win.isDestroyed() && !paletteOpen) focusNewTab(cur.active); }, 200);
   const discardTimer = setInterval(discardIdleTabs, 60 * 1000);
   discardTimer.unref?.();
 }
@@ -1482,6 +1568,7 @@ if (!app.requestSingleInstanceLock()) {
     app.quit();
   });
   app.on('before-quit', () => {
+    persistSettings(); // final flush so no preference change can be lost
     if (win && !win.isDestroyed()) saveSessionNow();
     if (downloadPersistTimer) persistDownloads(true);
   });

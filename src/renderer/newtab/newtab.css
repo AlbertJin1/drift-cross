@@ -56,7 +56,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 :root[data-theme="light"] .backdrop::before { opacity: .7; }
 
 /* layout */
-.page { position: relative; width: min(100%, 980px); min-height: 100vh; margin: 0 auto; padding: 26px 32px 22px; display: flex; flex-direction: column; animation: rise .36s cubic-bezier(.2,.8,.2,1) both; }
+.page { position: relative; width: min(100%, 980px); min-height: 100vh; margin: 0 auto; padding: 26px 32px 22px; display: flex; flex-direction: column; animation: page-fade .28s ease-out both; }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 750; letter-spacing: -.3px; }
 .brand img { width: 28px; height: 28px; }
@@ -138,7 +138,7 @@ kbd { min-width: 20px; padding: 1px 6px; border: 1px solid var(--line); border-b
 .btn.primary { border-color: transparent; color: #fff; background: linear-gradient(145deg, var(--accent), var(--accent-strong)); }
 .btn.primary:hover { filter: brightness(1.08); }
 
-@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes page-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes pop { from { opacity: 0; transform: translateY(-4px) scale(.99); } to { opacity: 1; transform: none; } }
 
 @media (max-width: 760px) {
@@ -153,3 +153,29 @@ kbd { min-width: 20px; padding: 1px 6px; border: 1px solid var(--line); border-b
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Font Awesome glyphs (react-icons/fa6) are filled shapes, not strokes. */
+svg.fa { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+svg.fa .ac { stroke: var(--glyph-accent, currentColor); }
+svg.fa .fl { fill: var(--glyph-accent, currentColor); stroke: none; }
+svg.fa .so { fill: currentColor; stroke: currentColor; }
+
+
+/* ---- Fully fluid new-tab page ------------------------------------------- */
+.tiles { grid-template-columns: repeat(auto-fill, minmax(clamp(88px, 18vw, 132px), 1fr)); gap: clamp(8px, 1.6vw, 14px); }
+.page { padding-left: clamp(14px, 4vw, 48px); padding-right: clamp(14px, 4vw, 48px); }
+.pin-dialog { width: min(380px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; }
+@media (max-height: 420px) { .tile { min-height: 78px; padding: 10px 6px; gap: 7px; } .tile-mark { width: 30px; height: 30px; border-radius: 10px; font-size: 13px; } .content { gap: 14px; } }
+@media (max-width: 360px) { .engine, .section-hint { display: none; } }
+
+/* Drift Browser wordmark lockup (shared look with the browser chrome) */
+.wm { position: relative; display: inline-block; font-size: 20px; font-weight: 800; line-height: 1; letter-spacing: -.045em; white-space: nowrap;
+  background: linear-gradient(100deg, #ffffff 0%, #e3dcff 55%, #b9a8ff 100%); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; }
+.wm .wm-i { display: inline; background-image: radial-gradient(circle at center, var(--wm-dot, #61e3dc) 0 60%, transparent 66%); background-size: .2em .2em; background-position: 50% .02em; background-repeat: no-repeat; }
+.brand-sub-nt { padding-left: 12px; margin-left: -2px; line-height: 1.7; border-left: 1px solid rgba(165,139,255,.38); font-size: 9px; font-weight: 800; letter-spacing: .34em; text-transform: uppercase; background: linear-gradient(90deg, #61e3dc, #a58bff); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; }
+@media (prefers-color-scheme: light) {
+  .wm { background-image: linear-gradient(100deg, #1d2140 0%, #3b2f8f 60%, #684de5 100%); }
+  .wm { --wm-dot: #0fb5a6; }
+  .brand-sub-nt { background-image: linear-gradient(90deg, #087f91, #684de5); }
+}
+.brand .wm { margin-left: -2px; }

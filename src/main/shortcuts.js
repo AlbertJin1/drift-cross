@@ -81,7 +81,7 @@ function matchShortcut(input) {
   switch (lower) {
     case 't': return result(shift ? 'reopen-tab' : 'new');
     case 'w': return result(shift ? 'close-window' : 'close');
-    case 'l': return shift ? null : result('address');
+    case 'l': return shift ? result('tab-search') : result('address');
     case 'k': return shift ? null : result('palette');
     case 'd': return shift ? null : result('bookmark');
     case 'b': return shift ? result('bookmarks') : null;

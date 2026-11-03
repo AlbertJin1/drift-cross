@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Drift Setup</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<style>
+:root{--a:#8b5cf6;--b:#63edda;--bg:#0b1020;--fg:#eef1ff;--mut:#98a0c4;--card:rgba(255,255,255,.06);--line:rgba(255,255,255,.12)}
+body.light{--bg:#f3f4fb;--fg:#161a33;--mut:#5b6286;--card:rgba(20,24,60,.05);--line:rgba(20,24,60,.14)}
+*{box-sizing:border-box;margin:0}html,body{height:100%}
+body{font:15px/1.5 "Segoe UI Variable","Segoe UI",system-ui,sans-serif;color:var(--fg);background:transparent;overflow:hidden;user-select:none}
+#win{position:absolute;inset:0;border-radius:24px;background:var(--bg);overflow:hidden;transition:background .5s}#win::after{content:'';position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px var(--line);pointer-events:none;z-index:9}
+canvas{position:absolute;inset:0;width:100%;height:100%}
+#bar{position:absolute;top:0;left:0;right:0;height:46px;-webkit-app-region:drag;display:flex;justify-content:flex-end;align-items:center;padding:0 14px;gap:6px;z-index:5}
+#bar button{-webkit-app-region:no-drag;width:30px;height:30px;border:0;border-radius:50%;background:var(--card);color:var(--fg);cursor:pointer;font-size:14px}
+#bar button:hover{background:var(--a);color:#fff}
+.scene{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 64px;opacity:0;pointer-events:none;transform:translateX(40px);transition:.6s cubic-bezier(.2,.8,.2,1)}
+.scene.on{opacity:1;pointer-events:auto;transform:none}
+.scene.out{transform:translateX(-40px)}
+.k{letter-spacing:.3em;text-transform:uppercase;font-size:11px;color:var(--b);font-weight:600;margin-bottom:14px}
+h1{font-size:54px;line-height:1.05;font-weight:700;letter-spacing:-.03em;max-width:560px}
+h1 em{font-style:normal;background:linear-gradient(100deg,var(--b),var(--a));-webkit-background-clip:text;color:transparent}
+p.s{color:var(--mut);max-width:430px;margin:16px 0 30px;font-size:16px}
+.btn{align-self:flex-start;border:0;border-radius:999px;padding:14px 30px;font:600 15px inherit;font-family:inherit;color:#fff;cursor:pointer;background:linear-gradient(100deg,var(--a),color-mix(in srgb,var(--a) 60%,var(--b)));box-shadow:0 10px 30px -8px var(--a);transition:.25s}
+.btn:hover{transform:translateY(-2px) scale(1.03)}.btn.ghost{background:var(--card);box-shadow:none;color:var(--fg)}
+.row{display:flex;gap:12px;align-items:center}
+.sw{display:flex;gap:12px;margin:6px 0 22px}
+.sw button{width:36px;height:36px;border-radius:50%;border:0;padding:0;cursor:pointer;background-repeat:no-repeat;background-origin:border-box;transition:.25s;box-shadow:0 0 0 0 var(--bg),0 0 0 0 var(--fg)}
+.sw button:hover{transform:scale(1.12)}.sw button.on{box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--fg)}
+button:disabled{opacity:.3;cursor:not-allowed}button:focus-visible,.pill:focus-visible{outline:2px solid var(--b);outline-offset:3px}
+.pill svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+#dots{position:absolute;left:64px;bottom:30px;display:flex;gap:8px;z-index:4;transition:.4s}#dots b{width:8px;height:8px;border-radius:9px;background:var(--line);transition:.4s}#dots b.on{width:26px;background:linear-gradient(90deg,var(--b),var(--a))}
+#pv{position:absolute;right:52px;top:50%;width:290px;margin-top:-135px;opacity:0;transform:translateY(24px) scale(.96);transition:.7s cubic-bezier(.2,.8,.2,1);z-index:2;pointer-events:none}#pv.on{opacity:1;transform:none}
+.pw{border-radius:16px;background:color-mix(in srgb,var(--fg) 7%,var(--bg));border:1px solid var(--line);overflow:hidden;box-shadow:0 30px 60px -22px color-mix(in srgb,var(--a) 60%,transparent)}
+.pt{display:flex;align-items:flex-end;gap:5px;padding:9px 10px 0}.pt i{width:8px;height:8px;border-radius:50%;background:var(--line);margin:0 2px 12px 0}.tab{margin-left:8px;font-size:11px;padding:6px 14px;border-radius:9px 9px 0 0;background:var(--bg);border-top:2px solid var(--a)}
+.pa{height:26px;margin:0 10px 10px;border-radius:13px;background:var(--card);position:relative}.pa:after{content:'';position:absolute;right:9px;top:8px;width:10px;height:10px;border-radius:50%;background:var(--a)}
+.pb{padding:18px 18px 22px;background:var(--bg)}.g{font-size:21px;font-weight:700;letter-spacing:-.02em;margin-bottom:12px}.g em{font-style:normal;color:var(--a)}
+.ps{height:34px;border-radius:17px;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 5px 0 14px;font-size:11px;color:var(--mut)}.ps u{width:24px;height:24px;border-radius:50%;background:var(--a)}
+.sc{display:flex;gap:10px;margin-top:16px}.sc i{width:38px;height:38px;border-radius:12px;background:color-mix(in srgb,var(--a) 24%,transparent)}.pl{text-align:center;font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--mut);margin-top:14px}
+.lbl{font-size:12px;color:var(--mut);letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:999px;background:var(--card);border:1px solid var(--line);cursor:pointer;margin:0 8px 8px 0;font-size:14px;transition:.2s}
+.pill.on{background:var(--a);border-color:var(--a);color:#fff}
+.path{display:flex;gap:8px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:8px 8px 8px 16px;max-width:450px;margin-bottom:22px;font-size:13px}
+.path span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+.path button{border:0;border-radius:10px;padding:7px 14px;background:var(--a);color:#fff;cursor:pointer;font:inherit;font-size:13px}
+#logo{position:absolute;right:70px;top:50%;width:230px;height:230px;margin-top:-115px;z-index:2;transition:.8s cubic-bezier(.2,.8,.2,1)}
+#logo svg{width:100%;height:100%;overflow:visible;filter:drop-shadow(0 20px 40px color-mix(in srgb,var(--a) 55%,transparent));animation:fl 5s ease-in-out infinite}
+@keyframes fl{50%{transform:translateY(-12px) rotate(1.5deg)}}
+.pct{font-size:96px;font-weight:700;letter-spacing:-.05em;line-height:1}.pct small{font-size:32px;color:var(--mut)}
+#phase{color:var(--b);font-size:16px;margin-top:8px;height:24px}
+.track{height:4px;width:440px;border-radius:9px;background:var(--card);margin-top:26px;overflow:hidden}
+.track b{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--b),var(--a));border-radius:9px;transition:width .3s}
+.err{color:#ff7d8d;margin-bottom:18px;max-width:480px}
+body.light .k,body.light #phase{color:var(--a)}</style></head><body>
+<div id="win"><canvas id="c"></canvas>
+<div id="bar"><button onclick="setup.win('min')" title="Minimize">–</button><button id="xb" onclick="setup.win('close')" title="Close">✕</button></div>
+<div id="dots"><b></b><b></b><b></b><b></b></div>
+<div id="pv"><div class="pw"><div class="pt"><i></i><i></i><i></i><span class="tab">New tab</span></div><div class="pa"></div><div class="pb"><div class="g">Good <em>evening</em></div><div class="ps">Search the web<u></u></div><div class="sc"><i></i><i></i><i></i><i></i></div></div></div><div class="pl">Live preview</div></div>
+<div id="logo"><svg viewBox="40 90 380 330"><defs>
+<linearGradient id="w" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#64f0de"/><stop offset=".55" stop-color="#4dc7f4"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+<linearGradient id="l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#dce6ff"/></linearGradient>
+<clipPath id="fill"><rect id="fr" x="0" y="0" width="500" height="0"/></clipPath></defs>
+<g fill="none" stroke="url(#w)" stroke-width="19" stroke-linecap="round"><path d="M65 192C105 171 143 168 184 180"/><path d="M53 247C98 223 142 220 190 233"/><path d="M75 302C112 283 151 281 192 292"/></g>
+<path d="M174 112H274C356 112 408 167 408 256 408 345 356 400 274 400H174Z" fill="url(#l)" opacity=".16"/>
+<g clip-path="url(#fill)"><path d="M174 112H274C356 112 408 167 408 256 408 345 356 400 274 400H174Z" fill="url(#l)"/></g>
+<path d="M235 173H269C321 173 350 204 350 256 350 308 321 339 269 339H235Z" fill="var(--bg)"/><circle cx="395" cy="112" r="14" fill="#63edda"/></svg></div>
+
+<section class="scene" id="s0"><div class="k">Drift Browser · <span id="ver"></span></div><h1>Let the web <em>flow</em> past you.</h1>
+<p class="s">A fast, quiet browser. Setup takes under a minute and needs no administrator rights.</p><button class="btn" onclick="go(1)">Begin →</button></section>
+
+<section class="scene" id="s1"><div class="k">Make it yours</div>
+<div class="lbl">Accent</div><div class="sw" id="sw"></div>
+<div class="lbl">Look</div><div><span class="pill" data-m="dark"><svg viewBox="0 0 24 24"><path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z"/></svg>Dark</span><span class="pill" data-m="light"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</span><span class="pill" data-m="system"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>Match system</span></div>
+<div class="lbl" style="margin-top:8px">Install to</div><div class="path"><span id="dir"></span><button onclick="browse()">Change</button></div>
+<div><span class="pill on" data-o="desktop">Desktop shortcut</span><span class="pill on" data-o="startMenu">Start menu</span><span class="pill" data-o="login">Launch at login</span></div>
+<div class="row" style="margin-top:14px"><button class="btn ghost" onclick="go(0)">Back</button><button class="btn" onclick="install()">Install Drift</button><span style="color:var(--mut);font-size:12px">about 300 MB · no admin needed</span></div></section>
+
+<section class="scene" id="s2"><div class="k">Installing</div><div class="pct"><span id="n">0</span><small>%</small></div><div id="phase"></div><div class="track"><b id="bar2"></b></div></section>
+
+<section class="scene" id="s3"><div class="k" id="dk">All set</div><h1 id="dh">Drift is <em>ready.</em></h1><p class="s" id="dp">Your bookmarks and settings live separately from the app, so updates never touch them.</p><div id="derr" class="err"></div>
+<div class="row"><button class="btn" id="dbtn">Launch Drift</button><button class="btn ghost" onclick="setup.win('close')">Close</button></div></section>
+
+<section class="scene" id="s4"><div class="k">Uninstall</div><h1>Leaving <em>so soon?</em></h1><p class="s">This removes the Drift app from your PC. Your profile can stay for a future return.</p>
+<div><span class="pill" id="wipe">Also delete bookmarks, history & settings</span></div>
+<div class="row" style="margin-top:14px"><button class="btn ghost" onclick="setup.win('close')">Keep Drift</button><button class="btn" onclick="uninstall()">Remove Drift</button></div></section>
+</div>
+<script>
+const T={violet:['#8b5cf6','#63edda'],ocean:['#0ea5e9','#5eead4'],forest:['#22a06b','#a3e635'],rose:['#f43f7e','#fda4af'],sunset:['#f97316','#fcd34d'],indigo:['#6366f1','#67e8f9'],graphite:['#64748b','#cbd5e1'],mint:['#10b981','#99f6e4']};
+const st={theme:'violet',mode:'dark',dir:'',desktop:1,startMenu:1,login:0};let cur=0,pct=0,target=0,burst=0,speed=1;
+const $=id=>document.getElementById(id),S=[...document.querySelectorAll('.scene')];
+function go(i){S[cur].classList.remove('on');S[cur].classList.add('out');const p=cur;setTimeout(()=>S[p].classList.remove('out'),600);cur=i;S[i].classList.add('on');
+ const l=$('logo').style;l.right=i==0||i==3||i==4?'70px':i==2?'70px':'-40px';l.opacity=i==1?0:1;$('pv').classList.toggle('on',i==1);$('dots').style.opacity=i==4?0:1;document.querySelectorAll('#dots b').forEach((d,j)=>d.classList.toggle('on',j==i));}
+function theme(){const[a,b]=T[st.theme];const r=document.body.style;r.setProperty('--a',a);r.setProperty('--b',b);
+ const light=st.mode=='light'||(st.mode=='system'&&!matchMedia('(prefers-color-scheme:dark)').matches);document.body.classList.toggle('light',light);
+ document.querySelectorAll('.sw button').forEach(e=>e.classList.toggle('on',e.dataset.t==st.theme));document.querySelectorAll('[data-m]').forEach(e=>e.classList.toggle('on',e.dataset.m==st.mode));}
+Object.entries(T).forEach(([k,[a,b]])=>{const i=document.createElement('button');i.setAttribute('aria-label',k);i.dataset.t=k;i.title=k;i.style.background=`linear-gradient(135deg,${a},${b})`;i.onclick=()=>{st.theme=k;theme();burst=1};$('sw').append(i)});
+document.querySelectorAll('[data-m]').forEach(e=>e.onclick=()=>{st.mode=e.dataset.m;theme()});
+document.querySelectorAll('[data-o]').forEach(e=>e.onclick=()=>{e.classList.toggle('on');st[e.dataset.o]=+e.classList.contains('on')});
+async function browse(){const p=await setup.browse(st.dir);if(p){st.dir=p;$('dir').textContent=p}}
+function prog(p,ph){target=p;if(ph)$('phase').textContent=ph}
+async function install(){pct=0;target=0;$('xb').disabled=true;go(2);speed=3;setup.onProgress(d=>prog(d.pct,d.phase));const r=await setup.install(st);
+ setTimeout(()=>done(r),900)}
+function done(r){speed=1;burst=1;$('xb').disabled=false;$('dh').innerHTML='Drift is <em>ready.</em>';$('dp').textContent='Your bookmarks and settings live separately from the app, so updates never touch them.';go(3);if(!r.ok){$('dh').innerHTML='Something <em>snagged.</em>';$('dp').textContent='';$('derr').textContent=r.error;$('dbtn').textContent='Try again';$('dbtn').onclick=()=>{$('derr').textContent='';go(1)};return}
+ $('dbtn').onclick=()=>setup.launch(r.exe)}
+async function uninstall(){const r=await setup.uninstall({wipe:$('wipe').classList.contains('on')});go(3);$('dk').textContent='Uninstalled';$('dh').innerHTML='Fair <em>winds.</em>';$('dp').textContent=r.ok?'Drift has been removed. Come back anytime.':'';$('derr').textContent=r.ok?'':r.error;$('dbtn').style.display='none'}
+$('wipe').onclick=e=>e.target.classList.toggle('on');
+/* wind field */
+const cv=$('c'),x=cv.getContext('2d');let W,H;const P=[];function rs(){W=cv.width=cv.clientWidth;H=cv.height=cv.clientHeight}rs();
+for(let i=0;i<170;i++)P.push({x:Math.random()*900,y:Math.random()*580,v:.6+Math.random()*1.6,l:20+Math.random()*60,a:Math.random()});
+let t=0;function frame(){t+=.006;x.clearRect(0,0,W,H);const a=getComputedStyle(document.body).getPropertyValue('--a'),b=getComputedStyle(document.body).getPropertyValue('--b');
+ pct+=(target-pct)*.06;$('n').textContent=Math.round(pct);$('bar2').style.width=pct+'%';$('fr').setAttribute('y',420-pct*3.3);$('fr').setAttribute('height',pct*3.3+4);
+ burst*=.96;const sp=speed+burst*5;x.lineCap='round';
+ for(const p of P){const ang=Math.sin(p.y*.008+t*2)*.35+Math.cos(p.x*.006-t)*.2;const dx=Math.cos(ang)*p.v*sp,dy=Math.sin(ang)*p.v*sp;
+  const g=x.createLinearGradient(p.x-p.l,p.y-dy*p.l/p.v/sp,p.x,p.y);g.addColorStop(0,'transparent');g.addColorStop(1,p.a>.5?a:b);
+  x.strokeStyle=g;x.globalAlpha=.12+p.a*.3+burst*.2;x.lineWidth=1+p.a*1.8;x.beginPath();x.moveTo(p.x-p.l*Math.cos(ang),p.y-p.l*Math.sin(ang));x.lineTo(p.x,p.y);x.stroke();
+  p.x+=dx;p.y+=dy;if(p.x>W+80){p.x=-80;p.y=Math.random()*H}if(p.y<-20||p.y>H+20)p.y=Math.random()*H}
+ requestAnimationFrame(frame)}
+(async()=>{const i=await setup.info();st.dir=i.dir;$('dir').textContent=i.dir;$('ver').textContent='v'+i.version;theme();frame();
+ if(i.uninstall){document.getElementById('logo').style.right='70px';go(4)}else go(0)})();
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.target.matches('button')){const b=S[cur].querySelector('.btn:not(.ghost)');b&&b.click()}});
+document.querySelectorAll('.pill').forEach(p=>{p.tabIndex=0;p.onkeydown=e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();p.click()}}});
+</script></body></html>

@@ -21,12 +21,12 @@
 
   // ------------------------------------------------------------ helpers
   const ICONS = {
-    search: '<svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="7.5"/><path d="m16.4 16.4 4.2 4.2"/></svg>',
-    globe: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>',
-    link: '<svg viewBox="0 0 24 24"><path d="M5 12h14M13 5l7 7-7 7"/></svg>',
-    check: '<svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
-    close: '<svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>',
-    plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>'
+    search: '<svg data-fa="search"></svg>',
+    globe: '<svg data-fa="globe"></svg>',
+    link: '<svg data-fa="arrowRight"></svg>',
+    check: '<svg data-fa="check"></svg>',
+    close: '<svg data-fa="close"></svg>',
+    plus: '<svg data-fa="plus"></svg>'
   };
   const ENGINES = {
     duckduckgo: { name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=' },
@@ -266,5 +266,5 @@
   });
 
   renderTiles();
-  input.focus();
+  // Focus stays in the browser's address bar; click here or just start typing to use this box.
 })();
