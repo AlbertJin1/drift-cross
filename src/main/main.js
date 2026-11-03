@@ -1,9 +1,15 @@
-const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, nativeTheme, dialog, shell, clipboard, screen } = require('electron');
+const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, nativeTheme, dialog, shell, clipboard, screen, safeStorage, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
 const { createExtensionManager } = require('./extensions');
 const { matchShortcut } = require('./shortcuts');
+const { createUpdater } = require('./updater');
+const { createTelemetry } = require('./telemetry');
+const { createStorage } = require('./storage');
+const { planDiscards, measurePressure } = require('./memory-manager');
+const { createVpn } = require('./vpn');
+const { createVpnGate } = require('./vpn-gate');
 
 // Project layout: src/main (this file), src/preload, src/renderer/*, build/ (icons).
 const ROOT_DIR = path.join(__dirname, '..', '..');
@@ -14,6 +20,10 @@ const PRELOAD_PATH = path.join(__dirname, '..', 'preload', 'preload.js');
 // Application Support (macOS), or XDG config directory (Linux). The actual
 // application binaries are installed separately by the per-user installer.
 app.setName('Drift');
+// SOCKS5 resolves destination hostnames at the proxy. Disable Chromium's
+// speculative DNS prefetch so page hints cannot leak hostname lookups directly
+// to the local resolver while the browser-only VPN tunnel is active.
+app.commandLine.appendSwitch('dns-prefetch-disable');
 const LEGACY_USER_DATA_DIRECTORY = app.getPath('userData');
 const APP_DATA_DIRECTORY = path.join(app.getPath('appData'), 'Drift');
 app.setPath('userData', APP_DATA_DIRECTORY);
@@ -73,15 +83,31 @@ const READER_JS = String.raw`(() => {
 })();`;
 
 // ---------------------------------------------------------------- storage
-const file = (f) => path.join(app.getPath('userData'), f);
-// Reads a profile file. If the main file is missing or corrupt (power loss, crash,
-// antivirus interference) the last good copy (<file>.bak) is used before giving up.
-const readJson = (f, fallback) => {
-  for (const candidate of [file(f), `${file(f)}.bak`]) {
-    try { return JSON.parse(fs.readFileSync(candidate, 'utf8')); } catch { /* try the next copy */ }
-  }
-  return fallback;
-};
+const storage = createStorage({ getDir: () => app.getPath('userData') });
+const { file, readJson, writeJson, writeJsonLater } = storage;
+
+// Browser-only VPN: a proxy tunnel applied to Drift's own session (see vpn.js).
+const vpn = createVpn({
+  getSession: () => session.defaultSession,
+  net, safeStorage, readJson, writeJson,
+  onChange: () => { applyWebRtcPolicyToAll(); push(); }
+});
+// VPN Gate's OpenVPN profiles are carried by a private userspace OpenVPN +
+// gVisor network stack, exposed as a localhost SOCKS5 proxy for Drift's session.
+// No system-wide tunnel adapter or routing-table change is installed.
+const vpnGate = createVpnGate({
+  net, dialog, app, getWindow: () => win,
+  getSession: () => session.defaultSession,
+  onChange: () => { applyWebRtcPolicyToAll(); push(); },
+  log: console
+});
+// While a VPN is connected, stop WebRTC from reaching around the proxy and revealing the real address.
+function applyWebRtcPolicy(wc) {
+  try { if (wc && !wc.isDestroyed()) wc.setWebRTCIPHandlingPolicy((vpn.isActive() || vpnGate.isActive()) ? 'disable_non_proxied_udp' : 'default'); } catch { /* not supported */ }
+}
+function applyWebRtcPolicyToAll() {
+  for (const s of spaces) for (const t of s.tabs) if (t.view) applyWebRtcPolicy(t.view.webContents);
+}
 function isPathInside(parent, candidate) {
   const relative = path.relative(path.resolve(parent), path.resolve(candidate));
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
@@ -104,39 +130,6 @@ function ensureUserDataDirectories() {
     }
   }
 }
-// Durable save: write to a temp file, flush it to disk, keep the previous good copy
-// as <file>.bak, then atomically swap. Windows can briefly refuse the rename while
-// an indexer/antivirus holds the file, so it retries and finally falls back to a
-// direct write. Returns true when the data reached disk.
-const writeJson = (f, v) => {
-  const target = file(f);
-  const temp = `${target}.${process.pid}.tmp`;
-  const data = JSON.stringify(v, null, 2);
-  try {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const fd = fs.openSync(temp, 'w');
-    try { fs.writeSync(fd, data); try { fs.fsyncSync(fd); } catch { /* not supported everywhere */ } } finally { fs.closeSync(fd); }
-    try { if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.bak`); } catch { /* backup is best effort */ }
-    let lastError = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try { fs.renameSync(temp, target); return true; }
-      catch (error) {
-        lastError = error;
-        const wait = Date.now() + 15 * (attempt + 1);
-        while (Date.now() < wait) { /* brief synchronous back-off */ }
-      }
-    }
-    fs.writeFileSync(target, data); // last resort: direct write
-    try { fs.unlinkSync(temp); } catch { /* ignore */ }
-    if (lastError) console.warn(`Drift saved ${f} with a direct write after rename failed:`, lastError.message);
-    return true;
-  } catch (error) {
-    console.error(`Drift could not save profile file ${f}:`, error?.message || error);
-    try { fs.unlinkSync(temp); } catch { /* ignore */ }
-    return false;
-  }
-};
-
 // Chrome-compatible extensions: Chrome Web Store installs + unpacked folders.
 const extensions = createExtensionManager({
   session: () => session.defaultSession,
@@ -196,14 +189,30 @@ let newTabShortcuts = 'smart';     // smart (most visited) | bookmarks | hidden
 let newTabClock = true;
 let windowStart = 'default';       // default | maximized | remember
 let launchAtLogin = false;
+let autoUpdate = true; // download updates quietly and install them when Drift closes (Windows installs)
+let usageReports = true; // tell the developer's monitor that Drift is open (version, OS, PC name - never browsing data)
 let showBookmarksBar = true;
 let downloadDirectory = app.getPath('downloads');
 let askWhereToSave = false;
+// Silent updater. Uses its own in-memory session, so the ad blocker, cookies and extensions never see its requests.
+let updaterSession = null;
+const monitorFetch = (url, init) => (updaterSession ||= session.fromPartition('drift-updater')).fetch(url, init);
+const updater = createUpdater({
+  app,
+  fetch: monitorFetch,
+  isEnabled: () => autoUpdate
+});
+// Usage reporting to the same monitor (open / heartbeat / close). It shares the updater's session and install id.
+const telemetry = createTelemetry({
+  app,
+  fetch: monitorFetch,
+  isEnabled: () => usageReports,
+  identity: { get: () => updater.installId(), set: (id) => updater.adoptInstallId(id) }
+});
 // Toolbar buttons the user pinned next to the address bar, in display order.
 let toolbarPins = [];
 let blockedHostCounts = Object.create(null);
 let downloads = [];
-let downloadPersistTimer = null;
 let findState = { visible: false, query: '', matchCase: false, activeMatchOrdinal: 0, matches: 0 };
 // A single browser workspace replaces the former Home / Work / Fun spaces.
 const spaces = [{ name: 'Browser', tabs: [], active: null }];
@@ -311,6 +320,40 @@ function hostnameOf(value) {
   try { return new URL(value).hostname.toLowerCase().replace(/\.$/, ''); } catch { return ''; }
 }
 
+// Ad blocking runs for every sub-request, so it must stay O(1)-ish: parse the host with a
+// regex, walk its domain suffixes against the Set, and remember the answer per host.
+const blockLookupCache = new Map();
+function requestHost(url) {
+  const m = /^https?:\/\/([^/?#]*)/i.exec(url);
+  if (!m) return '';
+  let authority = m[1];
+  if (authority.includes('@')) return hostnameOf(url); // credentials in the URL: use the real parser
+  const colon = authority.lastIndexOf(':');
+  if (colon > -1 && authority.indexOf(']') < colon) authority = authority.slice(0, colon);
+  return authority.toLowerCase().replace(/\.$/, '');
+}
+function blockedDomainFor(host) {
+  let hit = blockLookupCache.get(host);
+  if (hit !== undefined) return hit;
+  hit = '';
+  for (let candidate = host; candidate;) {
+    if (BLOCKED_HOSTS.has(candidate)) { hit = candidate; break; }
+    const dot = candidate.indexOf('.');
+    if (dot < 0) break;
+    candidate = candidate.slice(dot + 1);
+  }
+  if (blockLookupCache.size >= 5000) blockLookupCache.clear();
+  blockLookupCache.set(host, hit);
+  return hit;
+}
+// Counter updates reach the UI at most a few times a second, however many requests are blocked.
+let blockedPushTimer = null;
+function pushBlockedSoon() {
+  if (blockedPushTimer) return;
+  blockedPushTimer = setTimeout(() => { blockedPushTimer = null; push(); }, 400);
+  blockedPushTimer.unref?.();
+}
+
 function hostMatches(host, domain) {
   return !!host && (host === domain || host.endsWith('.' + domain));
 }
@@ -358,7 +401,10 @@ function layout() {
   const { width, height } = win.getContentBounds();
   ui?.setBounds({ x: 0, y: 0, width, height });
   palette?.setBounds({ x: 0, y: 0, width, height });
-  for (const s of spaces) for (const t of s.tabs) t.view?.setBounds(tabBounds());
+  // Resizing a hidden page makes its renderer re-layout for nothing (and can touch memory it
+  // had released). Only the visible tab follows the window; activateTab() and setUIOverlay()
+  // apply the current bounds to a tab at the moment it is shown.
+  activeTab()?.view?.setBounds(tabBounds());
 }
 
 // ---------------------------------------------------------------- state -> UI
@@ -387,12 +433,16 @@ function snapshot() {
     downloads: activeInternalPage === 'downloads' ? downloads.slice().sort((a, b) => b.startedAt - a.startedAt) : [],
     extensions: activeInternalPage === 'extensions' ? extensions.list() : [],
     find: { ...findState },
+    vpn: vpn.publicState(),
+    vpnGate: vpnGate.publicState(),
     blocked: blockedCount,
     adBlockEnabled,
     currentHost: host,
     siteAllowed: isSiteAllowed(host),
     blockedHosts: Object.entries(blockedHostCounts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([hostName, count]) => ({ host: hostName, count })),
-    settings: { appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins },
+    settings: { appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, autoUpdate, usageReports, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins },
+    canAutoUpdate: updater.supported(),
+    canReportUsage: telemetry.supported(),
     canLaunchAtLogin: process.platform !== 'linux',
     profileDirectory: app.getPath('userData'),
     extensionsDirectory: extensions.directory,
@@ -419,22 +469,19 @@ function push() {
 }
 
 let sessionTimer = null;
-function saveSessionNow() {
-  writeJson('session.json', {
-    active: cur.tabs.indexOf(cur.active),
-    tabs: cur.tabs.map((t) => ({ title: t.title, url: t.url, favicon: t.favicon }))
-  });
-}
-function saveSession() {
-  clearTimeout(sessionTimer);
-  sessionTimer = setTimeout(saveSessionNow, 350);
-}
+const sessionData = () => ({
+  active: cur.tabs.indexOf(cur.active),
+  tabs: cur.tabs.map((t) => ({ title: t.title, url: t.url, favicon: t.favicon }))
+});
+function saveSessionNow() { writeJson('session.json', sessionData()); }
+// Called on nearly every navigation/title event; the write is coalesced and runs off the main thread.
+function saveSession() { writeJsonLater('session.json', sessionData, 800); }
 
 function addHistory(title, url) {
   if (!/^https?:/i.test(url || '')) return;
   history.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, title: title || url, url, visitedAt: Date.now() });
   if (history.length > 1000) history.splice(0, history.length - 1000);
-  writeJson('history.json', history);
+  writeJsonLater('history.json', () => history, 2000);
 }
 
 function sortedBookmarks() {
@@ -442,24 +489,15 @@ function sortedBookmarks() {
   return bookmarksSortedCache;
 }
 function persistBookmarks() { bookmarksSortedCache = null; writeJson('bookmarks.json', bookmarks); }
-function persistSettings() { return writeJson(SETTINGS_FILE, { settingsVersion: 2, adBlockEnabled, allowlistedSites, appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins }); }
+function persistSettings() { return writeJson(SETTINGS_FILE, { settingsVersion: 2, adBlockEnabled, allowlistedSites, appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, autoUpdate, usageReports, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins }); }
 
 
 function persistDownloads(immediate = false) {
-  if (immediate) {
-    clearTimeout(downloadPersistTimer);
-    downloadPersistTimer = null;
-    writeJson('downloads.json', downloads.slice(-300));
-    return;
-  }
-  if (downloadPersistTimer) return;
-  downloadPersistTimer = setTimeout(() => {
-    downloadPersistTimer = null;
-    writeJson('downloads.json', downloads.slice(-300));
-  }, 700);
-  downloadPersistTimer.unref?.();
+  if (immediate) { writeJson('downloads.json', downloads.slice(-300)); return; }
+  writeJsonLater('downloads.json', () => downloads.slice(-300), 700); // progress events arrive many times a second
 }
 const activeDownloads = new Map();
+const downloadOwners = new Map(); // webContents id -> running downloads it started
 function recordDownload(item, id) {
   const found = downloads.find((entry) => entry.id === id);
   if (!found) return;
@@ -500,6 +538,7 @@ function attachView(tab) {
 
   const wc = view.webContents;
   bindShortcuts(wc);
+  applyWebRtcPolicy(wc);
   // Ctrl + mouse wheel / pinch zoom, which Electron reports but does not apply.
   wc.on('zoom-changed', (_event, direction) => {
     const level = wc.getZoomLevel() + (direction === 'in' ? 0.5 : -0.5);
@@ -519,16 +558,18 @@ function attachView(tab) {
       if (b.url === tab.url && b.title !== tab.title) { b.title = tab.title; changedBookmark = true; }
     }
     if (changedBookmark) persistBookmarks();
-    const h = [...history].reverse().find((x) => x.url === tab.url);
-    if (h) { h.title = tab.title; writeJson('history.json', history); }
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].url === tab.url) { history[i].title = tab.title; writeJsonLater('history.json', () => history, 2000); break; }
+    }
     push();
     saveSession();
   });
   wc.on('page-favicon-updated', (_e, favicons) => { tab.favicon = favicons?.[0] || ''; push(); saveSession(); });
   wc.on('did-start-loading', () => { tab.loading = true; push(); });
   wc.on('did-stop-loading', () => { tab.url = wc.getURL() || tab.url; tab.title = wc.getTitle() || tab.title; tab.loading = false; push(); saveSession(); });
-  wc.on('did-start-navigation', (_e, url, _inPlace, isMainFrame) => {
+  wc.on('did-start-navigation', (_e, url, inPlace, isMainFrame) => {
     if (!isMainFrame) return;
+    if (!inPlace) tab.thumb = null; // a thumbnail of the previous page would be misleading
     tab.url = url;
     tab.loading = true;
     push();
@@ -693,6 +734,12 @@ function clearFindState() {
 function activateTab(tab) {
   if (!cur.tabs.includes(tab)) return;
   clearFindState();
+  const wasLifted = cardLifted;
+  cardLifted = false;
+  // Remember what the tab being left looked like (including its scroll position) so its
+  // hover preview still works after the renderer is hidden or discarded.
+  const leaving = cur.active;
+  if (leaving && leaving !== tab && leaving.view && !isInternalUrl(leaving.url)) captureThumb(leaving, 800);
   for (const t of cur.tabs) t.view?.setVisible(false);
   cur.active = tab;
   tab.lastActive = Date.now();
@@ -708,11 +755,104 @@ function activateTab(tab) {
   tab.url = liveUrl(tab) || tab.url;
   tab.view.setBounds(tabBounds());
   tab.view.setVisible(true);
+  if (wasLifted) win.contentView.addChildView(tab.view); // put the page back above the chrome
   if (!paletteOpen) tab.view.webContents.focus();
   setUIOverlay(false);
   push();
   saveSession();
 }
+
+// ---------------------------------------------------------------- tab hover preview
+// Hovering a tab shows a thumbnail of its page as it currently looks (so it follows the scroll
+// position) and how much memory its renderer is using. The card is drawn by the browser chrome,
+// so while it is visible the chrome is raised above the page - without taking keyboard focus.
+const THUMB_WIDTH = 360;
+let cardLifted = false;
+
+function findTabById(id) {
+  for (const s of spaces) {
+    const found = s.tabs.find((x) => x.id === id);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function captureThumb(tab, timeoutMs = 500) {
+  const wc = tab.view && !tab.view.webContents.isDestroyed() ? tab.view.webContents : null;
+  if (!wc) return tab.thumb || null;
+  try {
+    let timer;
+    const image = await Promise.race([
+      wc.capturePage(),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs); })
+    ]);
+    clearTimeout(timer);
+    if (image && !image.isEmpty()) {
+      const small = image.getSize().width > THUMB_WIDTH ? image.resize({ width: THUMB_WIDTH, quality: 'good' }) : image;
+      tab.thumb = `data:image/jpeg;base64,${small.toJPEG(72).toString('base64')}`;
+    }
+  } catch { /* the page may be mid-navigation or being discarded; keep the previous thumbnail */ }
+  return tab.thumb || null;
+}
+
+function tabMemory(tab) {
+  const wc = tab.view && !tab.view.webContents.isDestroyed() ? tab.view.webContents : null;
+  if (!wc) return { memoryKB: null, sharedWith: 0 };
+  try {
+    const pid = wc.getOSProcessId();
+    const metrics = app.getAppMetrics();
+    const mine = metrics.find((m) => m.pid === pid);
+    const memory = mine?.memory || {};
+    // privateBytes (Windows) avoids counting pages shared between Chromium processes.
+    const memoryKB = Number(memory.privateBytes ?? memory.workingSetSize) || 0;
+    // Chromium can host several tabs of the same site in one process; say so instead of lying.
+    let sharedWith = 0;
+    for (const s of spaces) {
+      for (const other of s.tabs) {
+        if (other === tab || !other.view || other.view.webContents.isDestroyed()) continue;
+        if (other.view.webContents.getOSProcessId() === pid) sharedWith += 1;
+      }
+    }
+    return { memoryKB, sharedWith };
+  } catch { return { memoryKB: null, sharedWith: 0 }; }
+}
+
+function liftChromeForCard(on) {
+  if (!win || !ui || ui.webContents.isDestroyed() || uiOverlayOpen || paletteOpen) return;
+  const active = activeTab();
+  if (on) {
+    if (cardLifted || !active?.view || isInternalUrl(active.url)) return; // internal pages already sit under the chrome
+    cardLifted = true;
+    win.contentView.addChildView(ui);
+    const { width, height } = win.getContentBounds();
+    ui.setBounds({ x: 0, y: 0, width, height });
+  } else {
+    if (!cardLifted) return;
+    cardLifted = false;
+    if (active?.view && !isInternalUrl(active.url)) {
+      win.contentView.addChildView(active.view);
+      active.view.setBounds(tabBounds());
+    }
+  }
+}
+
+ipcMain.handle('tabs:preview', async (_e, rawId, withThumb = true) => {
+  const tab = findTabById(Number(rawId));
+  if (!tab) return null;
+  const live = !!tab.view && !tab.view.webContents.isDestroyed();
+  const internal = isInternalUrl(tab.url);
+  let thumb = tab.thumb || null;
+  if (live && !internal && withThumb) thumb = await captureThumb(tab);
+  const { memoryKB, sharedWith } = live && !internal ? tabMemory(tab) : { memoryKB: null, sharedWith: 0 };
+  return {
+    id: tab.id,
+    state: internal ? 'internal' : live ? 'loaded' : 'sleeping',
+    thumb,
+    memoryKB,
+    sharedWith,
+    host: hostnameOf(liveUrl(tab) || tab.url) || ''
+  };
+});
 
 function destroyView(tab) {
   if (!tab.view) return;
@@ -819,22 +959,45 @@ function removeBookmark(url) {
   if (bookmarks.length !== before) { persistBookmarks(); push(); }
 }
 
-// Free memory by discarding inactive, silent tabs. Their URL/session metadata
-// remains, and the WebContents is recreated only when that tab is selected.
+// Free memory by discarding background tabs (see memory-manager.js for the policy). A
+// discarded tab keeps its URL, title and favicon and gets a fresh WebContents when selected.
 function discardIdleTabs() {
+  const live = [];
   for (const s of spaces) {
     for (const t of s.tabs) {
-      const visible = s === cur && t === cur.active;
-      if (t.view && !visible && Date.now() - t.lastActive > IDLE_DISCARD_MS && !t.view.webContents.isCurrentlyAudible()) {
-        destroyView(t);
-      }
+      if (!t.view || t.view.webContents.isDestroyed()) continue;
+      const wc = t.view.webContents;
+      live.push({
+        tab: t,
+        id: t.id,
+        lastActive: t.lastActive,
+        visible: s === cur && t === cur.active,
+        audible: wc.isCurrentlyAudible(),
+        busy: downloadOwners.has(wc.id) || (wc.isBeingCaptured?.() ?? false),
+        isNewTab: isNewTabUrl(liveUrl(t))
+      });
     }
   }
+  if (!live.some((entry) => !entry.visible)) return; // nothing in the background, skip the measurements
+  const pressure = measurePressure({ getSystemMemoryInfo: () => process.getSystemMemoryInfo(), getAppMetrics: () => app.getAppMetrics(), isWindows: IS_WINDOWS });
+  for (const entry of live) entry.memoryKB = pressure.byPid.get(entry.tab.view.webContents.getOSProcessId()) || 0;
+  const doomed = new Set(planDiscards(live, { now: Date.now(), pressure: pressure.level }));
+  let changed = false;
+  for (const entry of live) {
+    if (!doomed.has(entry.id)) continue;
+    entry.tab.url = liveUrl(entry.tab) || entry.tab.url;
+    entry.tab.loading = false;
+    destroyView(entry.tab);
+    changed = true;
+  }
+  if (changed) { push(); saveSession(); }
 }
 
 // ---------------------------------------------------------------- palette
 function openPalette() {
   paletteOpen = true;
+  clearTimeout(paletteReleaseTimer);
+  paletteReleaseTimer = null;
   if (!palette) {
     // Load the palette only on first use to reduce cold-start WebContents work.
     const palettePrefs = { preload: PRELOAD_PATH, contextIsolation: true, sandbox: true };
@@ -875,10 +1038,23 @@ function openPalette() {
     palette.webContents.send('palette:open');
   }
 }
+let paletteReleaseTimer = null;
+function releasePalette() {
+  clearTimeout(paletteReleaseTimer);
+  paletteReleaseTimer = null;
+  if (paletteOpen || !palette) return;
+  const view = palette;
+  palette = null;
+  try { win?.contentView.removeChildView(view); } catch { /* already detached */ }
+  if (!view.webContents.isDestroyed()) view.webContents.close();
+}
 function closePalette() {
   if (!paletteOpen) return;
   paletteOpen = false;
   palette?.setVisible(false);
+  clearTimeout(paletteReleaseTimer);
+  paletteReleaseTimer = setTimeout(releasePalette, 60 * 1000); // its renderer process is only needed while the palette is in use
+  paletteReleaseTimer.unref?.();
   if (isInternalUrl(activeTab()?.url)) ui?.webContents.focus();
   else activeTab()?.view?.webContents.focus();
 }
@@ -934,6 +1110,7 @@ ipcMain.on('palette:run', (_e, act) => {
 function setUIOverlay(open) {
   if (!win || !ui || ui.webContents.isDestroyed()) return;
   uiOverlayOpen = !!open;
+  cardLifted = false; // a full overlay supersedes the hover-card lift
   if (uiOverlayOpen) {
     // The chrome WebContents is normally below the page views. Lift it above
     // the active page only while a modal is open; its transparent background
@@ -1065,6 +1242,8 @@ function command(name, arg) {
     case 'find': if (wc && !isInternalUrl(t?.url)) { findState.visible = true; setUIOverlay(true); ui?.webContents.send('find:show'); push(); } break;
     case 'adblock': adBlockEnabled = !adBlockEnabled; persistSettings(); push(); break;
     case 'adblock-settings': ui?.webContents.send('open-adblock'); break;
+    case 'tab-card-show': liftChromeForCard(true); break;
+    case 'tab-card-hide': liftChromeForCard(false); break;
     case 'overlay-open': setUIOverlay(true); break;
     case 'overlay-close': setUIOverlay(false); break;
     case 'devtools': wc?.toggleDevTools(); break;
@@ -1158,6 +1337,8 @@ ipcMain.on('settings:update', (_e, patch) => {
   if (NEWTAB_OPEN_MODES.includes(patch.newTabOpens)) newTabOpens = patch.newTabOpens;
   if (WINDOW_START_MODES.includes(patch.windowStart)) { windowStart = patch.windowStart; if (windowStart === 'remember') saveWindowState(); }
   if (typeof patch.launchAtLogin === 'boolean' && patch.launchAtLogin !== launchAtLogin && process.platform !== 'linux') { launchAtLogin = patch.launchAtLogin; applyLoginItem(); }
+  if (typeof patch.autoUpdate === 'boolean' && patch.autoUpdate !== autoUpdate) { autoUpdate = patch.autoUpdate; updater.settingsChanged(); }
+  if (typeof patch.usageReports === 'boolean' && patch.usageReports !== usageReports) { usageReports = patch.usageReports; telemetry.settingsChanged(); }
   if (typeof patch.showBookmarksBar === 'boolean') showBookmarksBar = patch.showBookmarksBar;
   if (typeof patch.askWhereToSave === 'boolean') askWhereToSave = patch.askWhereToSave;
   if (typeof patch.downloadDirectory === 'string' && patch.downloadDirectory.trim()) downloadDirectory = patch.downloadDirectory.trim();
@@ -1174,6 +1355,35 @@ ipcMain.on('settings:update', (_e, patch) => {
   persistSettings();
   layout();
   push();
+});
+
+// ---- VPN (browser-only proxy tunnel)
+ipcMain.handle('vpn:save', (_e, input) => vpn.save(input && typeof input === 'object' ? input : {}));
+ipcMain.handle('vpn:delete', (_e, id) => vpn.remove(String(id || '')));
+ipcMain.handle('vpn:connect', async (_e, id, opts) => {
+  await vpnGate.disconnect(); // only one browser tunnel can own the session proxy at a time
+  return vpn.connect(String(id || ''), { password: typeof opts?.password === 'string' ? opts.password : undefined });
+});
+ipcMain.handle('vpn:disconnect', async () => {
+  await vpnGate.disconnect();
+  return vpn.disconnect();
+});
+ipcMain.handle('vpn-gate:list', async (_e, options) => {
+  try { return await vpnGate.list({ force: options?.force === true }); }
+  catch (error) { return { error: error?.message || 'Could not load VPN Gate servers.' }; }
+});
+ipcMain.handle('vpn-gate:connect', async (_e, id) => {
+  await vpn.disconnect(); // prevent two controllers from overwriting Chromium's session proxy
+  return vpnGate.connect(String(id || ''));
+});
+ipcMain.handle('vpn-gate:disconnect', () => vpnGate.disconnect());
+ipcMain.handle('vpn-gate:download', (_e, id) => vpnGate.download(String(id || '')));
+// Proxy sign-in prompts are answered silently for the connected VPN server and nothing else.
+app.on('login', (event, _webContents, _details, authInfo, callback) => {
+  const creds = vpn.credentialsFor(authInfo);
+  if (!creds) return;
+  event.preventDefault();
+  callback(creds.username, creds.password);
 });
 
 ipcMain.handle('downloads:choose-folder', async () => {
@@ -1336,7 +1546,9 @@ function buildMenu() {
 // ---------------------------------------------------------------- app
 function setupSession() {
   const ses = session.defaultSession;
-  ses.on('will-download', (_event, item) => {
+  ses.on('will-download', (_event, item, sourceContents) => {
+    const sourceId = sourceContents && !sourceContents.isDestroyed() ? sourceContents.id : 0;
+    if (sourceId) downloadOwners.set(sourceId, (downloadOwners.get(sourceId) || 0) + 1);
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const filename = item.getFilename() || 'download';
     let targetDir = downloadDirectory || app.getPath('downloads');
@@ -1372,6 +1584,7 @@ function setupSession() {
       const final = downloads.find((record) => record.id === id);
       if (final) { final.state = state; final.savePath = item.getSavePath() || final.savePath; final.receivedBytes = item.getReceivedBytes(); final.totalBytes = item.getTotalBytes(); }
       activeDownloads.delete(id);
+      if (sourceId) { const left = (downloadOwners.get(sourceId) || 1) - 1; if (left > 0) downloadOwners.set(sourceId, left); else downloadOwners.delete(sourceId); }
       persistDownloads(true); push();
     });
   });
@@ -1380,18 +1593,14 @@ function setupSession() {
   ses.setPermissionRequestHandler((_wc, permission, cb) => cb(['fullscreen', 'clipboard-sanitized-write', 'pointerLock'].includes(permission)));
   ses.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
     if (!adBlockEnabled || details.resourceType === 'mainFrame') return callback({});
-    let targetHost = '';
-    try { targetHost = new URL(details.url).hostname.toLowerCase().replace(/\.$/, ''); } catch { return callback({}); }
+    const blockedHost = blockedDomainFor(requestHost(details.url));
+    if (!blockedHost) return callback({});
+    // Only blocked requests pay for the allow-list check.
     const initiatorHost = hostnameOf(details.initiator || details.referrer || '');
     if (initiatorHost && isSiteAllowed(initiatorHost)) return callback({});
-    let blockedHost = '';
-    for (const host of BLOCKED_HOSTS) { if (hostMatches(targetHost, host)) { blockedHost = host; break; } }
-    if (!blockedHost) return callback({});
     blockedCount += 1;
     blockedHostCounts[blockedHost] = (blockedHostCounts[blockedHost] || 0) + 1;
-    // Network-heavy pages can make hundreds of requests. A short UI debounce
-    // keeps the counter responsive without forcing a render for each request.
-    push();
+    pushBlockedSoon();
     callback({ cancel: true });
   });
 }
@@ -1428,6 +1637,14 @@ function scheduleWindowState() {
 
 async function start() {
   ensureUserDataDirectories();
+  // A downloaded update that was not installed when Drift last closed is applied now, before any window opens.
+  // The installer starts Drift again by itself, so 'exit' simply ends this process.
+  const settingsOnDisk = readJson(SETTINGS_FILE, {});
+  autoUpdate = settingsOnDisk.autoUpdate !== false;
+  usageReports = settingsOnDisk.usageReports !== false;
+  const updateGate = await updater.prepareStartup();
+  if (updateGate === 'exit') { app.exit(0); return; }
+  if (updateGate === 'restart') { app.relaunch(); app.exit(0); return; }
   const savedBookmarks = readJson('bookmarks.json', []);
   bookmarks = Array.isArray(savedBookmarks) ? savedBookmarks.filter((b) => b && typeof b.url === 'string' && /^https?:\/\//i.test(b.url)).map((b) => ({
     title: typeof b.title === 'string' && b.title.trim() ? b.title : b.url,
@@ -1443,6 +1660,7 @@ async function start() {
     visitedAt: Number.isFinite(entry.visitedAt) ? entry.visitedAt : 0
   })) : [];
   const settings = readJson(SETTINGS_FILE, {});
+  vpn.load();
   adBlockEnabled = settings.adBlockEnabled !== false;
   appearance = APPEARANCES.includes(settings.appearance) ? settings.appearance : 'system';
   colorTheme = COLOR_THEME_IDS.includes(settings.colorTheme) ? settings.colorTheme : 'violet';
@@ -1459,6 +1677,8 @@ async function start() {
   newTabClock = settings.newTabClock !== false;
   windowStart = WINDOW_START_MODES.includes(settings.windowStart) ? settings.windowStart : 'default';
   launchAtLogin = app.isPackaged && process.platform !== 'linux' ? !!app.getLoginItemSettings().openAtLogin : settings.launchAtLogin === true;
+  autoUpdate = settings.autoUpdate !== false;
+  usageReports = settings.usageReports !== false;
   applyAppearance();
   showBookmarksBar = settings.showBookmarksBar !== false;
   askWhereToSave = settings.askWhereToSave === true;
@@ -1473,7 +1693,8 @@ async function start() {
     : [];
   if (!fs.existsSync(file(SETTINGS_FILE))) persistSettings(); // first run: store the defaults right away
   setupSession();
-  await extensions.restore();
+  // Extensions load in parallel with the window and browser chrome; the first page waits for them below.
+  const extensionsReady = extensions.restore().catch((error) => console.warn('Drift could not restore extensions:', error?.message || error));
   buildMenu();
 
   const windowBounds = initialWindowBounds();
@@ -1502,7 +1723,7 @@ async function start() {
 
   win.on('resize', layout);
   // Re-layout on every state change that can alter the content size, not just drag-resizes.
-  for (const evt of ['maximize', 'unmaximize', 'restore', 'enter-full-screen', 'leave-full-screen', 'resized', 'moved']) win.on(evt, layout);
+  for (const evt of ['maximize', 'unmaximize', 'restore', 'enter-full-screen', 'leave-full-screen', 'resized']) win.on(evt, layout);
   const relayout = () => { if (win && !win.isDestroyed()) layout(); };
   screen.on('display-metrics-changed', relayout);
   screen.on('display-added', relayout);
@@ -1545,6 +1766,7 @@ async function start() {
     cur.active = cur.tabs[0];
   }
 
+  await extensionsReady; // content scripts must be registered before the first page loads
   layout();
   if (cur.tabs.length) {
     const initialTab = cur.active || cur.tabs[0];
@@ -1554,8 +1776,10 @@ async function start() {
   win.show();
   // Focus requested before the window was visible can be dropped, so ask again once it is shown.
   if (cur.active && isNewTabUrl(cur.active.url)) setTimeout(() => { if (win && !win.isDestroyed() && !paletteOpen) focusNewTab(cur.active); }, 200);
-  const discardTimer = setInterval(discardIdleTabs, 60 * 1000);
+  const discardTimer = setInterval(discardIdleTabs, 30 * 1000);
   discardTimer.unref?.();
+  updater.start(); // background check shortly after startup; installs when Drift closes
+  telemetry.start(); // "open" a few seconds after launch, then a heartbeat every minute
 }
 
 if (process.platform === 'win32') app.setAppUserModelId('org.drift.browser');
@@ -1567,10 +1791,20 @@ if (!app.requestSingleInstanceLock()) {
     console.error('Drift failed to start:', error);
     app.quit();
   });
-  app.on('before-quit', () => {
+  let closeReported = false;
+  app.on('before-quit', (event) => {
+    vpn.shutdown();
+    vpnGate.shutdown();
     persistSettings(); // final flush so no preference change can be lost
     if (win && !win.isDestroyed()) saveSessionNow();
-    if (downloadPersistTimer) persistDownloads(true);
+    storage.flushAll(); // history, downloads and anything else still waiting on a debounce timer
+    // Tell the monitor this session ended, then quit for real. The report is capped at a couple of seconds
+    // (reportCloseTimeoutMs) so closing Drift never feels slow, and it runs only once.
+    if (!closeReported && telemetry.hasOpenSession() && usageReports) {
+      closeReported = true;
+      event.preventDefault();
+      telemetry.stop().catch(() => {}).finally(() => app.quit());
+    }
   });
   app.on('window-all-closed', () => app.quit());
 }

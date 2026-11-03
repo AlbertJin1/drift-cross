@@ -46,6 +46,7 @@
       <button id="history-btn" class="icon" title="History (Ctrl+H)" aria-label="History"><svg data-fa="history"></svg></button>
       <button id="downloads-btn" class="icon" title="Downloads (Ctrl+J)" aria-label="Downloads"><svg data-fa="download"></svg></button>
       <button id="extensions-btn" class="icon" title="Extensions (Ctrl+Shift+E)" aria-label="Extensions"><svg data-fa="puzzle"></svg></button>
+      <button id="vpn-btn" class="vpn-chip hidden" title="VPN" aria-label="VPN status"><svg data-fa="vpn"></svg><span id="vpn-chip-label"></span></button>
       <button id="protection" class="protection-chip flex items-center gap-2" title="Privacy protection" aria-label="Privacy protection settings"><svg data-fa="shield"></svg><span id="blocked">0</span></button>
       <button id="find-btn" class="icon" title="Find in page (Ctrl+F)" aria-label="Find in page"><svg data-fa="search"></svg></button>
       <button id="reader" class="icon" title="Reader mode (Ctrl+Shift+R)" aria-label="Reader mode"><svg data-fa="book"></svg></button>
@@ -77,6 +78,14 @@
     </div>
   </main>
 
+  <div id="tab-card" class="tab-card hidden" role="tooltip" aria-hidden="true">
+    <div class="tc-thumb"><img id="tc-img" alt="" draggable="false"><div id="tc-empty" class="tc-empty"></div></div>
+    <div class="tc-meta">
+      <div id="tc-title" class="tc-title"></div>
+      <div id="tc-host" class="tc-host"></div>
+      <div class="tc-mem"><span class="tc-mem-label">Memory</span><span id="tc-mem" class="tc-mem-value"></span></div>
+    </div>
+  </div>
   <div id="tab-list" class="tab-list hidden" role="dialog" aria-label="Open tabs">
     <div class="tl-search"><svg data-fa="search"></svg><input id="tl-input" type="text" placeholder="Search open tabs" autocomplete="off" spellcheck="false" aria-label="Search open tabs"></div>
     <div id="tl-rows" class="tl-rows" role="listbox" aria-label="Open tabs"></div>
@@ -93,6 +102,53 @@
       <div class="site-exception"><div><strong id="exception-title">This website</strong><p id="exception-host">Open a website to manage its exception.</p></div><button id="site-exception-toggle" class="secondary-button" disabled>Pause on this site</button></div>
       <div class="blocked-hosts-wrap"><h3>Most blocked hosts</h3><div id="blocked-hosts" class="blocked-hosts"></div></div>
       <div class="dialog-footer flex items-center justify-end"><button class="secondary-button" data-close="adblockDialog">Done</button></div>
+    </div>
+  </div>
+
+  <div id="vpnDialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="vpn-title">
+    <div class="dialog-panel ext-panel vpn-panel">
+      <div class="dialog-heading flex items-center justify-between gap-3">
+        <div class="ext-heading">
+          <span class="ext-store-badge"><svg data-fa="vpn"></svg></span>
+          <div><h2 id="vpn-title">Add a VPN connection</h2><p>Applies to Drift only. The rest of your PC is not affected.</p></div>
+        </div>
+        <button class="icon dialog-close" data-close="vpnDialog" title="Close" aria-label="Close"><svg data-fa="close"></svg></button>
+      </div>
+      <div class="ext-body vpn-form">
+        <label class="ext-field" for="vpn-name"><span>Connection name</span><div class="ext-input"><input id="vpn-name" type="text" maxlength="60" spellcheck="false" autocomplete="off" placeholder="My VPN"></div></label>
+        <label class="ext-field" for="vpn-server"><span>Server name or address</span><div class="ext-input"><input id="vpn-server" type="text" spellcheck="false" autocomplete="off" placeholder="vpn.example.com"></div></label>
+        <div class="vpn-row2">
+          <label class="ext-field" for="vpn-type"><span>VPN type</span><select id="vpn-type" class="page-select vpn-select"></select></label>
+          <label class="ext-field vpn-port" for="vpn-port"><span>Port</span><div class="ext-input"><input id="vpn-port" type="text" inputmode="numeric" maxlength="5" spellcheck="false" autocomplete="off"></div></label>
+        </div>
+        <label class="ext-field" for="vpn-signin"><span>Type of sign-in info</span>
+          <select id="vpn-signin" class="page-select vpn-select"><option value="password">User name and password</option><option value="none">None</option></select>
+        </label>
+        <div id="vpn-creds" class="vpn-row2">
+          <label class="ext-field" for="vpn-user"><span>User name</span><div class="ext-input"><input id="vpn-user" type="text" spellcheck="false" autocomplete="off"></div></label>
+          <label class="ext-field" for="vpn-pass"><span>Password</span><div class="ext-input"><input id="vpn-pass" type="password" spellcheck="false" autocomplete="new-password"></div></label>
+        </div>
+        <label id="vpn-remember-row" class="vpn-check"><input id="vpn-remember" type="checkbox" checked><span>Remember my sign-in info</span></label>
+        <p id="vpn-hint" class="ext-hint"></p>
+        <p id="vpn-error" class="ext-error hidden" role="alert"></p>
+      </div>
+      <div class="dialog-footer ext-footer"><button class="secondary-button" data-close="vpnDialog">Cancel</button><button id="vpn-save" class="primary-button">Save</button></div>
+    </div>
+  </div>
+
+  <div id="vpnPasswordDialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="vpn-pw-title">
+    <div class="dialog-panel ext-panel">
+      <div class="dialog-heading flex items-center justify-between gap-3">
+        <div class="ext-heading">
+          <span class="ext-store-badge"><svg data-fa="lock"></svg></span>
+          <div><h2 id="vpn-pw-title">Sign in</h2><p id="vpn-pw-sub"></p></div>
+        </div>
+        <button class="icon dialog-close" data-close="vpnPasswordDialog" title="Close" aria-label="Close"><svg data-fa="close"></svg></button>
+      </div>
+      <div class="ext-body">
+        <label class="ext-field" for="vpn-pw-input"><span>Password</span><div class="ext-input"><svg data-fa="lock"></svg><input id="vpn-pw-input" type="password" spellcheck="false" autocomplete="off"></div></label>
+      </div>
+      <div class="dialog-footer ext-footer"><button class="secondary-button" data-close="vpnPasswordDialog">Cancel</button><button id="vpn-pw-submit" class="primary-button">Connect</button></div>
     </div>
   </div>
 

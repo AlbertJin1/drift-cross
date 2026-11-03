@@ -12,6 +12,8 @@ A fast, lightweight browser for **Windows, macOS and Linux**, built on Electron 
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Getting started](#getting-started)
 - [Building installers](#building-installers)
+- [Automatic updates](#automatic-updates)
+- [Usage monitoring](#usage-monitoring)
 - [Extensions](#extensions)
 - [Project layout](#project-layout)
 - [Design notes](#design-notes)
@@ -52,8 +54,18 @@ A fast, lightweight browser for **Windows, macOS and Linux**, built on Electron 
 
 ### Performance
 
-- Lazy tab creation, idle-tab discarding and background timer throttling.
-- Debounced chrome updates, and session restore that does not eagerly load every saved page.
+- **Browser-session proxy tunnel.** Settings → VPN adds HTTPS proxy (TLS to the server), HTTP proxy and SOCKS5 endpoints and applies them to Drift only. Drift signs in for you, including SOCKS5 (a loopback relay does the sign-in Chromium cannot), checks the server and shows your exit address on connect, never falls back to a direct connection while connected, and restricts WebRTC to help prevent direct-address leaks. Saved passwords are encrypted with the OS (DPAPI on Windows) and never sent to the interface. Code: `src/main/vpn.js`, tests: `npm run test:vpn`.
+- **VPN Gate browser-only tunnel.** Settings → VPN fetches the live VPN Gate relay list and connects supported OpenVPN profiles through Drift's bundled userspace OpenVPN + gVisor network-stack helper. It exposes a loopback-only SOCKS5 endpoint and assigns it to Drift's Electron session; it does not create a Windows TUN adapter, alter routes, require elevation, or tunnel other applications. SOCKS5 destination names are resolved through the proxy, Chromium DNS prefetch is disabled to prevent speculative local DNS lookups, and WebRTC non-proxied UDP is restricted while connected. Drift verifies the exit IP before showing Connected and keeps the browser session fail-closed if the helper unexpectedly exits. Relay compatibility is checked individually: the pinned OpenVPN implementation supports AES-GCM and AES-CBC + HMAC, optional inline `tls-auth` / `tls-crypt`, and a TLS control channel with no extra wrapper. Drift rejects BF-CBC, active compression, TAP, `tls-crypt-v2`, external key-file references and profiles that require unsupported negotiation directives or scripts rather than silently dropping those requirements. Every connection is pinned to the current server IP from VPN Gate's CSV directory, avoiding dependency on `.opengw.net` DNS. `.ovpn` export remains available. The separately built helper uses `github.com/buengese/go-openvpn` (LGPL-2.1-or-later with usage exception) and gVisor; the matching vendored source archive, licenses and version metadata are included in Windows packages. Build it with `scripts\build_vpn_helper.bat` (Go 1.25.5+; the module's declared toolchain is selected automatically), or use `build_publish.bat`, which builds the helper before packaging. The bundled helper is currently built for Windows x64; macOS/Linux builds can browse the directory and export profiles but do not expose Connect until a platform helper is supplied. Code: `src/main/vpn-gate.js`; tests: `npm run test:vpn-gate`.
+- **Standalone management model.** Drift has no organization-enrollment or remote-browser-management service in this build. It does not disable or bypass Windows device controls or administrator-enforced Chromium policies.
+- **Tab hover preview.** Hovering a tab shows a card with a thumbnail of the page as it currently looks (so it follows the scroll position), its title and site, and the memory its renderer is using (refreshed every 2.5 seconds while the card is open). Background tabs show the view they had when you left them; a discarded tab shows its last view dimmed and reads "Sleeping · 0 MB". When Chromium hosts several tabs in one process the figure is marked "shared process". The chrome is raised above the page only while the card is visible and never takes keyboard focus.
+- **Memory-aware tab discarding.** Background tabs give their renderer process back after 5 minutes idle (2 minutes under moderate memory pressure, 1 minute under high pressure), an idle New Tab page after 45 seconds, and no more than 6 background tabs keep a renderer at once (least recently used go first). Under high pressure the heaviest idle tabs are released early. Tabs playing audio, being captured or running a download are never discarded. A discarded tab keeps its title, icon and place in the strip and reloads when selected. See [Memory management](#memory-management).
+- Lazy tab creation, background timer throttling, and session restore that does not eagerly load every saved page.
+- The command palette's renderer is released a minute after you close it and recreated on demand.
+- Only the visible tab is resized with the window; hidden tabs are fixed up when they are selected.
+- History, session and download progress are saved in coalesced, non-blocking writes (and flushed on quit) so a busy page can never stall the browser on disk I/O.
+- Ad and tracker blocking uses a cached, constant-time host lookup; the blocked counter reaches the UI a few times a second at most.
+- Extensions load while the window and browser chrome load, instead of before them.
+- Debounced chrome updates; the toolbar only rebuilds the parts of the UI that changed.
 - Manager data (bookmarks, history, downloads, extensions) is sent over IPC only while its page is open.
 - Per-user Windows installer: no administrator rights needed.
 
@@ -123,6 +135,35 @@ Build each target on its own operating system.
 
 App icons for every platform (`.ico`, `.icns`, `.png` and the `.svg` source) are in `build/`.
 
+## Automatic updates
+
+Windows installs update themselves silently, using the Universal App Monitor (app id `drift`).
+
+1. About a minute after launch, and every six hours while Drift stays open, Drift asks the monitor's public client gateway for the latest release. The request carries the app version and a random install id kept in the profile (`Updates\state.json`); nothing else. Usage monitoring (below) is separate and can be switched off.
+2. A newer `Drift-Setup.exe` is downloaded in the background, rejected unless its size and SHA-256 match what the monitor announced, and parked in `%APPDATA%\Drift\Updates`.
+3. When Drift closes, a hidden helper waits for the browser to exit and runs the installer silently over the existing install. The next launch is the new version.
+4. If that did not happen (crash, shutdown, antivirus), the staged installer is applied at the next launch, before a window opens, and Drift reopens by itself.
+
+Bookmarks, history and settings live in `%APPDATA%\Drift` and are never touched. Updates are skipped on macOS/Linux, in development runs, and when the install folder needs administrator rights (a silent install cannot show a UAC prompt). Turn them off in **Settings > General > Keep Drift up to date**. Progress and errors are written to `%APPDATA%\Drift\Updates\updater.log`.
+
+- **Gateway address:** `src/main/update-config.js` (`gatewayUrl`, or the `DRIFT_UPDATE_GATEWAY` environment variable for testing).
+- **Publishing:** build the installer, then upload `Drift-Setup.exe` in the monitor's Drift tab > Releases. The version must be higher than the installed one; it is read from the file, so bump `version` in `package.json` first.
+- **Which installer:** both work. The NSIS installer is run with `/S`; the custom Setup build has a headless `--silent-update` mode that swaps the new files in next to the old ones and keeps the previous folder until the swap succeeds.
+- **Tests:** `npm run test:updater` runs the updater against a fake gateway (no Windows needed); `npm test` runs the updater, usage-reporting, memory-policy and storage tests (`npm run test:memory`, `npm run test:storage`).
+
+## Usage monitoring
+
+Packaged Drift builds also tell the Universal App Monitor (app id `drift`) when the browser is open, so the **Drift** tab shows which PCs are online right now, their version and when they last reported. It uses the same public client gateway as the updater (`resource=telemetry`); the monitor's API key stays on the server.
+
+- **`open`** a few seconds after launch (a new session), **`heartbeat`** about once a minute while Drift stays open, and **`close`** when Drift quits (capped at ~2.5 seconds so closing is never slowed). If the close is lost (crash, power cut), the monitor shows the session as ended once the heartbeats stop.
+- **What is sent:** the random install id (the same one the updater uses), the Drift version, the operating-system version, the PC name, the LAN address and a random per-launch session id. **Never** the sites you visit, tabs, searches, bookmarks, history or downloads.
+- **Control:** **Settings > General > Share usage status** switches it off at any time (the open session is closed immediately). Development runs (`npm start`) never report.
+- **Install id:** if the monitor already knows this PC under another install id, it answers with that one and Drift adopts it, so one PC stays one install.
+- **Diagnostics:** failures are written to `%APPDATA%\Drift\Updates\telemetry.log`; they never interrupt the browser.
+- **Tests:** `npm run test:telemetry` runs the reporter against a fake gateway that applies the real gateway's validation (no Windows needed).
+
+Reporting needs the monitor with `desktop_sessions` enabled for `drift` (Universal App Monitor 2.5.2 or newer) and a published Drift release that contains it (1.3.2 or newer): installed copies pick it up through the normal silent update.
+
 ## Extensions
 
 Drift runs Chrome extensions through Chromium:
@@ -147,6 +188,10 @@ scripts/
 src/
   main/
     main.js                  browser core: profile, tabs, downloads, request blocking, settings, IPC
+    memory-manager.js        tab discard policy and memory-pressure measurement (pure, unit tested)
+    vpn.js                   browser-session proxy profiles, proxy rules and SOCKS5 sign-in relay (unit tested)
+    vpn-gate.js              VPN Gate server directory, compatibility detection, userspace OpenVPN bridge and safe profile export (unit tested)
+    storage.js               durable profile reads/writes plus coalesced non-blocking saves
     shortcuts.js             shortcut table, handled on every surface
     extensions.js            Chrome Web Store + unpacked extension manager
     extension-info.js        names, icons and readable permissions for the Add extension dialog
@@ -157,9 +202,24 @@ src/
     newtab/                  start page
     palette/                 command palette
     shared/                  style.css, icons.js (generated), Tailwind entry and output, assets/
+resources/vpn/               bundled browser-only OpenVPN/SOCKS5 helper, license and corresponding source archive (built on Windows)
 ```
 
 ## Design notes
+
+### Memory management
+
+`src/main/memory-manager.js` decides what to release; `main.js` runs it every 30 seconds and only measures anything when a background tab actually holds a renderer.
+
+| Rule | Default |
+|---|---|
+| Idle expiry | 5 min (2 min moderate pressure, 1 min high pressure) |
+| Idle New Tab page | 45 s |
+| Background tabs allowed to keep a renderer | 6, least recently used released first (never one used in the last minute) |
+| Early release under high pressure | the 2 heaviest tabs idle for 20 s+, per pass |
+| Never discarded | the visible tab, tabs playing audio, tabs being captured, tabs with a running download |
+
+Pressure is Drift's own footprint (private memory of all its processes) compared with 35% of installed RAM (never less than 1.5 GB); moderate starts at 70% of that budget. On Windows the system's available memory is used as well (under 20% free = moderate, under 10% = high). macOS and Linux report "free" memory without the file cache, so they use only the footprint rule. The thresholds are the `DEFAULTS` in `memory-manager.js`.
 
 ### Tab strip
 

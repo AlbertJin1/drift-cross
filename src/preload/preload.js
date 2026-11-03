@@ -8,7 +8,7 @@ const MANAGE_CHANNELS = [
   'adblock:toggle', 'adblock:toggle-site', 'adblock:reset-count', 'settings:update',
   'downloads:action', 'find:query', 'find:next', 'find:close', 'extension:confirm-response'
 ];
-const INVOKE_CHANNELS = ['downloads:choose-folder', 'downloads:clear', 'extensions:install', 'extensions:install-store', 'extensions:remove', 'data:clear', 'menu:data'];
+const INVOKE_CHANNELS = ['downloads:choose-folder', 'downloads:clear', 'extensions:install', 'extensions:install-store', 'extensions:remove', 'data:clear', 'menu:data', 'tabs:preview', 'vpn:save', 'vpn:delete', 'vpn:connect', 'vpn:disconnect', 'vpn-gate:list', 'vpn-gate:connect', 'vpn-gate:disconnect', 'vpn-gate:download'];
 
 contextBridge.exposeInMainWorld('drift', {
   platform: process.platform,

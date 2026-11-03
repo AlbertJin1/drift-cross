@@ -42,12 +42,17 @@ if not defined DRIFT_VERSION (
 )
 
 echo.
-echo [1/6] Validating Drift sources and installer resources...
+echo [1/8] Validating Drift sources and installer resources...
 call npm run check
 if errorlevel 1 goto :fail
 
 echo.
-echo [2/6] Installing exact locked dependencies...
+echo [2/8] Building the bundled browser-only VPN Gate engine...
+call scripts\build_vpn_helper.bat
+if errorlevel 1 goto :fail
+
+echo.
+echo [3/8] Installing exact locked dependencies...
 call npm ci --no-audit --no-fund
 if errorlevel 1 (
     echo ERROR: npm ci failed. Check the network and package-lock.json.
@@ -55,12 +60,17 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/6] Compiling the local Tailwind stylesheet...
+echo [4/8] Running the complete unit-test suite...
+call npm test
+if errorlevel 1 goto :fail
+
+echo.
+echo [5/8] Compiling the local Tailwind stylesheet...
 call npm run css:build
 if errorlevel 1 goto :fail
 
 echo.
-echo [4/6] Preparing a clean NSIS build directory...
+echo [6/8] Preparing a clean NSIS build directory...
 if exist "dist" rmdir /s /q "dist"
 if exist "dist" (
     echo ERROR: Could not clear dist\. Close any process using files in that directory.
@@ -68,7 +78,7 @@ if exist "dist" (
 )
 
 echo.
-echo [5/6] Building the Drift Windows x64 installer (current-user default)...
+echo [7/8] Building the Drift Windows x64 installer (current-user default)...
 call npx electron-builder --win nsis --x64 --publish never
 if errorlevel 1 goto :fail
 
@@ -86,7 +96,7 @@ if %DRIFT_INSTALLER_SIZE% LSS 1048576 (
 )
 
 echo.
-echo [6/6] Packaging the publish folder and generating release checksums...
+echo [8/8] Packaging the publish folder and generating release checksums...
 REM Build the entire release in a staging folder and generate its hash before
 REM replacing the previous publish folder. A failed build leaves the last
 REM known-good release untouched.
@@ -132,6 +142,7 @@ echo Install scope: Current user by default ^(all-users option for admins^)
 echo App files:     %%LOCALAPPDATA%%\Programs\Drift
 echo Browser data:  %%APPDATA%%\Drift ^(kept on uninstall^)
 echo Package:       Installer + release manifest + SHA-256 + notes
+echo VPN:           Bundled userspace OpenVPN bridge (browser session only)
 echo ==============================================================
 call :maybe_pause
 exit /b 0

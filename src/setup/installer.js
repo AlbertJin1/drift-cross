@@ -11,6 +11,11 @@ const startMenu = () => path.join(app.getPath('appData'), 'Microsoft', 'Windows'
 app.setPath('userData', path.join(os.tmpdir(), 'drift-setup-ui')); // never touch the real Drift profile
 if (isUninstall) process.chdir(os.tmpdir());
 let win;
+// Headless update mode, used by Drift's silent updater: no window, installs over the existing copy and exits.
+const argValue = (name) => { const hit = process.argv.find((a) => a.startsWith(`--${name}=`)); return hit ? hit.slice(name.length + 3) : null; };
+const silentUpdate = process.argv.includes('--silent-update') && !isUninstall;
+const forceRun = process.argv.includes('--force-run');
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 const run = (cmd, args) => new Promise((res) => execFile(cmd, args, { windowsHide: true }, (e) => res(!e)));
 const reg = (n, t, v) => run('reg', ['add', KEY, '/v', n, '/t', t, '/d', String(v), '/f']);
@@ -24,6 +29,7 @@ const copy = (s, d, onBytes) => new Promise((res, rej) => {
 const walk = (d, out = []) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); e.isDirectory() ? walk(p, out) : out.push(p); } return out; };
 
 app.whenReady().then(() => {
+  if (silentUpdate) { runSilentUpdate(); return; }
   win = new BrowserWindow({ width: 900, height: 580, frame: false, resizable: false, transparent: true, backgroundColor: '#00000000', hasShadow: false, show: false,
     icon: path.join(__dirname, '..', '..', 'build', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false } });
@@ -86,3 +92,49 @@ ipcMain.handle('launch', (_e, p) => {
   const env = { ...process.env }; delete env.PORTABLE_EXECUTABLE_FILE; delete env.PORTABLE_EXECUTABLE_DIR; delete env.PORTABLE_EXECUTABLE_APP_FILENAME; // so Drift starts as the browser, not as setup
   spawn(p, [], { detached: true, stdio: 'ignore', env, cwd: path.dirname(p) }).unref(); setTimeout(() => app.quit(), 400);
 });
+
+// ---------------------------------------------------------------- silent update (no UI)
+// Copies this extracted payload into a side folder first and swaps it in with two renames, so a failure or power
+// cut never leaves a half-updated install: the old folder is kept until the new one is in place.
+const copyRetry = async (s, d, onBytes) => {
+  for (let attempt = 1; ; attempt++) {
+    try { await copy(s, d, onBytes); return; } catch (e) { if (attempt >= 8) throw e; await sleep(400); }
+  }
+};
+const renameRetry = async (from, to) => {
+  for (let attempt = 1; ; attempt++) {
+    try { fs.renameSync(from, to); return; } catch (e) { if (attempt >= 20) throw e; await sleep(500); } // files may be briefly held by antivirus or a closing process
+  }
+};
+async function runSilentUpdate() {
+  const logFile = path.join(process.env.APPDATA || os.tmpdir(), 'Drift', 'Updates', 'updater.log');
+  const log = (m) => { try { fs.mkdirSync(path.dirname(logFile), { recursive: true }); fs.appendFileSync(logFile, `[${new Date().toISOString()}] setup: ${m}\n`); } catch {} };
+  const dir = argValue('update-dir');
+  const stage = `${dir}.update`, old = `${dir}.old`;
+  try {
+    if (!dir || path.resolve(dir).toLowerCase() === path.resolve(srcDir).toLowerCase() || !fs.existsSync(path.join(dir, 'Drift.exe'))) throw new Error(`"${dir}" is not an existing Drift install`);
+    log(`updating ${dir} to ${app.getVersion()}`);
+    await killInstalled(dir);
+    fs.rmSync(stage, { recursive: true, force: true }); fs.rmSync(old, { recursive: true, force: true });
+    for (const f of walk(srcDir)) {
+      const dest = path.join(stage, path.relative(srcDir, f));
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      await copyRetry(f, dest, () => {});
+    }
+    if (!fs.existsSync(path.join(stage, 'Drift.exe'))) throw new Error('the new files are incomplete');
+    await renameRetry(dir, old);
+    try { await renameRetry(stage, dir); } catch (e) { fs.renameSync(old, dir); throw e; } // put the previous version back
+    fs.rmSync(old, { recursive: true, force: true });
+    if (await run('reg', ['query', KEY])) await reg('DisplayVersion', 'REG_SZ', app.getVersion()); // only for installs made by this setup
+    log('update installed');
+    if (forceRun) { // Drift was started only to apply this update, so open the browser again
+      const env = { ...process.env }; delete env.PORTABLE_EXECUTABLE_FILE; delete env.PORTABLE_EXECUTABLE_DIR; delete env.PORTABLE_EXECUTABLE_APP_FILENAME;
+      spawn(path.join(dir, 'Drift.exe'), [], { detached: true, stdio: 'ignore', env, cwd: dir }).unref();
+    }
+    app.exit(0);
+  } catch (e) {
+    log(`update failed: ${e && e.message ? e.message : e}`);
+    try { fs.rmSync(stage, { recursive: true, force: true }); } catch {}
+    app.exit(1);
+  }
+}

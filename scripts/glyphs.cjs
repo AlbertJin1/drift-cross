@@ -34,6 +34,7 @@ module.exports = {
   search:   '<circle cx="10.6" cy="10.6" r="6.4"/><path class="ac" d="m15.4 15.4 4.6 4.6"/>',
   book:     '<path d="M12 6.4C10.2 5 7.8 4.6 4.6 4.8v12.6c3.2-.2 5.6.2 7.4 1.6 1.8-1.4 4.2-1.8 7.4-1.6V4.8c-3.2-.2-5.6.2-7.4 1.6Z"/><path class="ac" d="M12 6.4V19"/>',
   terminal: '<rect x="3.5" y="5" width="17" height="14" rx="3.5"/><path d="m8 10 3 2.4L8 14.8"/><path class="ac" d="M13 15h3.4"/>',
+  vpn:      '<circle cx="5.6" cy="15.2" r="2.4"/><circle cx="18.4" cy="15.2" r="2.4"/><path class="ac" d="M8 15.2h8"/><path d="M3.6 11.2c2.6-5.2 14.2-5.2 16.8 0"/>',
   gear:     '<circle class="ac" cx="12" cy="12" r="2.9"/><circle cx="12" cy="12" r="6.3"/><path d="M12 2.4v2M12 19.6v2M2.4 12h2M19.6 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/>',
   more:     '<circle class="fl" cx="5.5" cy="12" r="2"/><circle class="so" cx="12" cy="12" r="2"/><circle class="fl" cx="18.5" cy="12" r="2"/>',
 

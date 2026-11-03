@@ -9,6 +9,8 @@ document.body.classList.toggle('is-windows', drift.platform === 'win32');
 const tabEls = new Map();
 let lastActiveId = null;
 let lastBookmarkBarSignature = '';
+let lastBlockedHostsSignature = null; // blocked-host list rebuilds only when it changes
+let lastMaximizedState = null;        // maximize/restore icon is swapped only when the state flips
 let currentSettingsSection = 'general';
 let bookmarkFilter = '';
 let bookmarkFolderFilter = '';
@@ -92,6 +94,109 @@ function makeTab(id) {
   });
   return element;
 }
+// ---- Tab hover card: live thumbnail of the page (as scrolled) + memory used by the tab
+const TabCard = {
+  el: null, img: null, empty: null, title: null, host: null, mem: null,
+  showTimer: 0, hideTimer: 0, pollTimer: 0, tabEl: null, id: null, visible: false, seq: 0, lifted: false,
+  DELAY: 450, POLL: 2500, W: 280,
+  init() {
+    this.el = $('tab-card'); this.img = $('tc-img'); this.empty = $('tc-empty');
+    this.title = $('tc-title'); this.host = $('tc-host'); this.mem = $('tc-mem');
+    const box = $('tabs');
+    box.addEventListener('pointerover', (event) => {
+      const tabEl = event.target.closest?.('.tab');
+      if (!tabEl || !box.contains(tabEl) || tabEl === this.tabEl) return;
+      if (tabEl.classList.contains('closing') || tabEl.classList.contains('entering')) return;
+      this.enter(tabEl);
+    });
+    box.addEventListener('pointerleave', () => this.leave());
+    box.addEventListener('wheel', () => this.hide(), { passive: true });
+    box.addEventListener('focusin', (event) => { if (event.target.matches?.('.tab:focus-visible')) this.enter(event.target, true); });
+    box.addEventListener('focusout', () => this.hide());
+    document.addEventListener('pointerdown', () => this.hide(), true);
+    document.addEventListener('keydown', () => this.hide(), true);
+    window.addEventListener('blur', () => this.hide());
+    document.addEventListener('mouseleave', () => this.hide());
+  },
+  blocked() {
+    return document.body.classList.contains('dialog-open') || (typeof overlayNeeded === 'function' && overlayNeeded()) || tabDrag.el || tabDrag.settling;
+  },
+  enter(tabEl, immediate = false) {
+    clearTimeout(this.hideTimer); clearTimeout(this.showTimer);
+    this.tabEl = tabEl; this.id = tabEl._id;
+    if (this.blocked()) return;
+    // Moving between tabs while a card is open switches instantly, like other browsers.
+    const wait = this.visible || immediate ? 0 : this.DELAY;
+    this.showTimer = setTimeout(() => this.show(tabEl), wait);
+  },
+  leave() {
+    clearTimeout(this.showTimer);
+    this.tabEl = null; this.id = null;
+    clearTimeout(this.hideTimer);
+    this.hideTimer = setTimeout(() => this.hide(), 90);
+  },
+  async show(tabEl) {
+    if (!tabEl.isConnected || this.blocked() || this.tabEl !== tabEl) return;
+    const mine = ++this.seq;
+    this.title.textContent = tabEl._label || 'New tab';
+    this.host.textContent = '';
+    this.mem.textContent = '…';
+    this.img.hidden = true; this.empty.hidden = false; this.empty.textContent = 'Loading preview…';
+    this.el.classList.remove('is-sleeping');
+    this.place(tabEl);
+    if (!this.lifted) { this.lifted = true; drift.cmd('tab-card-show'); }
+    this.el.classList.remove('hidden'); this.el.setAttribute('aria-hidden', 'false');
+    this.visible = true;
+    await this.refresh(tabEl, true, mine);
+    clearInterval(this.pollTimer);
+    this.pollTimer = setInterval(() => { if (this.visible && this.tabEl === tabEl) this.refresh(tabEl, false, this.seq); }, this.POLL);
+  },
+  async refresh(tabEl, withThumb, mine) {
+    let info = null;
+    try { info = await drift.invoke('tabs:preview', tabEl._id, withThumb); } catch { /* tab vanished */ }
+    if (mine !== this.seq || !this.visible || this.tabEl !== tabEl || !info) return;
+    this.host.textContent = info.state === 'internal' ? 'Drift page' : (info.host || '');
+    if (withThumb) {
+      if (info.thumb) { this.img.src = info.thumb; this.img.hidden = false; this.empty.hidden = true; }
+      else {
+        this.img.hidden = true; this.empty.hidden = false;
+        this.empty.textContent = info.state === 'internal' ? 'Built-in page' : info.state === 'sleeping' ? 'No preview yet' : 'Preview unavailable';
+      }
+    }
+    this.el.classList.toggle('is-sleeping', info.state === 'sleeping');
+    this.mem.textContent = this.formatMemory(info);
+  },
+  formatMemory(info) {
+    if (info.state === 'sleeping') return 'Sleeping · 0 MB';
+    if (info.state === 'internal' || info.memoryKB == null) return '—';
+    const mb = info.memoryKB / 1024;
+    const text = mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${Math.max(1, Math.round(mb))} MB`;
+    return info.sharedWith ? `${text} · shared process` : text;
+  },
+  place(tabEl) {
+    const rect = tabEl.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth;
+    const width = Math.min(this.W, vw - 16);
+    this.el.style.width = `${width}px`;
+    const left = Math.max(8, Math.min(rect.left + rect.width / 2 - width / 2, vw - width - 8));
+    this.el.style.left = `${Math.round(left)}px`;
+    this.el.style.top = `${Math.round(rect.bottom + 8)}px`;
+  },
+  hide() {
+    clearTimeout(this.showTimer); clearTimeout(this.hideTimer); clearInterval(this.pollTimer);
+    this.seq += 1;
+    if (this.visible) {
+      this.visible = false;
+      this.el.classList.add('hidden'); this.el.setAttribute('aria-hidden', 'true');
+    }
+    if (this.lifted) {
+      this.lifted = false;
+      if (!overlayNeeded()) drift.cmd('tab-card-hide');
+    }
+  }
+};
+TabCard.init();
+
 function fallbackTabIcon(tab) {
   const node = document.createElement('div'); node.className = 'tab-dot';
   node.textContent = (tab.title || '?').trim().charAt(0).toUpperCase();
@@ -103,7 +208,8 @@ function updateTab(element, tab) {
   element.setAttribute('aria-selected', String(!!tab.active));
   const label = tab.title || 'New tab';
   if (element._title.textContent !== label) element._title.textContent = label;
-  element.title = tab.title || label;
+  element.setAttribute('aria-label', label); // the hover card replaces the native tooltip
+  element._label = label; element._url = tab.url || '';
   const internal = (String(tab.url || '').match(/^drift:\/\/([a-z]+)/i) || [])[1]?.toLowerCase() || '';
   const stamp = `${tab.loading ? 1 : 0}|${internal ? 'int:' + internal : tab.favicon || ''}|${(tab.title || '?').slice(0, 1)}`;
   if (element._iconStamp !== stamp) {
@@ -555,6 +661,9 @@ function renderProtection() {
   $('site-exception-toggle').textContent = state.siteAllowed ? 'Resume on this site' : 'Pause on this site';
   $('site-exception-toggle').classList.toggle('danger-action', !state.siteAllowed && !!host);
   const hosts = $('blocked-hosts');
+  const hostsSignature = (state.blockedHosts || []).map((item) => `${item.host}\u0000${item.count}`).join('\u0001');
+  if (hostsSignature === lastBlockedHostsSignature) return;
+  lastBlockedHostsSignature = hostsSignature;
   if (!state.blockedHosts?.length) {
     const empty = document.createElement('span'); empty.className = 'muted-note'; empty.textContent = 'No blocked requests yet in this session.'; hosts.replaceChildren(empty);
   } else {
@@ -581,9 +690,12 @@ function applySettings() {
   document.documentElement.style.setProperty('--chrome-height', `${preferences.showBookmarksBar === false ? 82 : 108}px`);
   if ($('window-version')) $('window-version').textContent = (state.version || '1.3.0').split('.').slice(0, 2).join('.');
   if ($('win-maximize')) {
-    $('win-maximize').innerHTML = state.isMaximized
-      ? '<svg data-fa="restore"></svg>'
-      : '<svg data-fa="square"></svg>';
+    if (lastMaximizedState !== !!state.isMaximized) {
+      lastMaximizedState = !!state.isMaximized;
+      $('win-maximize').innerHTML = lastMaximizedState
+        ? '<svg data-fa="restore"></svg>'
+        : '<svg data-fa="square"></svg>';
+    }
     $('win-maximize').title = state.isMaximized ? 'Restore' : 'Maximize';
     $('win-maximize').setAttribute('aria-label', state.isMaximized ? 'Restore window' : 'Maximize window');
   }
@@ -651,7 +763,9 @@ function renderSettingsContent() {
         ].join('')],
         ['Window and system', 'How the Drift window appears when it opens.', [
           settingRow('Window on startup', 'Pick the size Drift opens at.', selectSetting('window-start-setting', prefs.windowStart || 'default', [['default', 'Default size'], ['maximized', 'Maximized'], ['remember', 'Remember last size and position']])),
-          state.canLaunchAtLogin === false ? '' : settingRow('Launch Drift when you sign in', 'Start the browser automatically when your computer starts.', switchSetting('launch-login-setting', prefs.launchAtLogin === true))
+          state.canLaunchAtLogin === false ? '' : settingRow('Launch Drift when you sign in', 'Start the browser automatically when your computer starts.', switchSetting('launch-login-setting', prefs.launchAtLogin === true)),
+          state.canAutoUpdate ? settingRow('Keep Drift up to date', 'Download updates quietly in the background and install them when you close Drift.', switchSetting('auto-update-setting', prefs.autoUpdate !== false)) : '',
+          state.canReportUsage ? settingRow('Share usage status', 'Let the developer see that Drift is open: its version, your Windows version and PC name. Never the sites you visit, your tabs, searches or history.', switchSetting('usage-reports-setting', prefs.usageReports !== false)) : ''
         ].join('')]
       ]
     },
@@ -688,6 +802,7 @@ function renderSettingsContent() {
         `<div class="settings-inline-card"><div><strong>Site exceptions and activity</strong><small>${Number(state.blocked || 0).toLocaleString()} requests blocked this session</small></div><button class="small-action" data-action="open-protection">Manage protection</button></div>`
       ].join('')
     },
+    vpn: vpnSection(),
     downloads: {
       title: 'Downloads', intro: 'Choose where downloaded files are saved.', body: [
         settingRow('Download location', 'Files are saved to this folder by default.', `<div class="folder-control"><span class="folder-path">${escapeHtml(prefs.downloadDirectory || 'System Downloads')}</span><button class="small-action" data-action="choose-download-folder">Change</button></div>`),
@@ -698,7 +813,7 @@ function renderSettingsContent() {
       title: 'About Drift Browser', intro: 'Browser build and runtime information.', body: `
         <div class="about-page-card"><img src="../shared/assets/drift-mark.svg" alt=""><div><strong>Drift Browser ${escapeHtml(state.version || '1.3.0')}</strong><small>A focused browser built for fast, comfortable browsing.</small><small>Electron ${escapeHtml(state.electronVersion || '—')} · Chromium ${escapeHtml(state.chromiumVersion || '—')}</small></div><span class="version-status">Installed build</span></div>
         <div class="settings-inline-card profile-location-card"><div><strong>Browser profile location</strong><small class="profile-path">${escapeHtml(state.profileDirectory || 'AppData/Drift')}</small><small>Settings, bookmarks, history, session data, and installed extensions are stored here.</small></div><button class="small-action" data-action="open-profile-folder">Open folder</button></div>
-        <p class="page-muted-copy">Drift uses the Chromium engine through Electron. Extensions are copied into your Drift profile so they remain available after the original folder is moved.</p>`
+        <p class="page-muted-copy">Drift uses the Chromium engine through Electron. Extensions are copied into your Drift profile so they remain available after the original folder is moved.</p><p class="page-muted-copy">This build is a standalone browser and includes no organization-enrollment or remote-browser-management service. Windows device controls and administrator-enforced policies remain controlled by your device administrator.</p>`
     }
   };
   const section = sections[currentSettingsSection] || sections.general;
@@ -772,10 +887,11 @@ function pageNavigation() {
     newtab: '<svg data-fa="newtab"></svg>',
     search: '<svg data-fa="search"></svg>',
     privacy: '<svg data-fa="shield"></svg>',
+    vpn: '<svg data-fa="vpn"></svg>',
     about: '<svg data-fa="info"></svg>'
   };
   const links = [['settings', 'Settings'], ['bookmarks', 'Bookmarks'], ['history', 'History'], ['downloads', 'Downloads'], ['extensions', 'Extensions']];
-  const settingsLinks = [['general','General'],['appearance','Appearance'],['newtab','New tab'],['search','Search'],['privacy','Privacy'],['downloads','Downloads'],['about','About']];
+  const settingsLinks = [['general','General'],['appearance','Appearance'],['newtab','New tab'],['search','Search'],['privacy','Privacy'],['vpn','VPN'],['downloads','Downloads'],['about','About']];
   const subnav = state.internalPage === 'settings' ? `<div class="sidebar-caption settings-caption">SETTINGS</div><nav class="page-nav settings-subnav">${settingsLinks.map(([key,label]) => `<button class="page-nav-item setting-nav-item ${currentSettingsSection === key ? 'active' : ''}" data-setting-section="${key}"><span class="page-nav-icon">${icons[key]}</span>${label}</button>`).join('')}</nav>` : '';
   return `<div class="page-sidebar-brand"><img src="../shared/assets/drift-mark.svg" alt=""><div class="brand-lockup"><span class="wm" role="img" aria-label="Drift">Dr<span class="wm-i" aria-hidden="true">ı</span>ft</span><div class="brand-sub"><span>Browser</span></div></div></div>
     <div class="sidebar-caption">LIBRARY & PREFERENCES</div>
@@ -784,7 +900,7 @@ function pageNavigation() {
 }
 function currentPageRenderKey() {
   const page = state.internalPage || '';
-  if (page === 'settings') return JSON.stringify([page, currentSettingsSection, state.settings, state.adBlockEnabled, currentSettingsSection === 'privacy' ? state.blocked : 0, state.canLaunchAtLogin, state.version, state.electronVersion, state.chromiumVersion, state.profileDirectory]);
+  if (page === 'settings') return JSON.stringify([page, currentSettingsSection, state.settings, state.adBlockEnabled, currentSettingsSection === 'privacy' ? state.blocked : 0, currentSettingsSection === 'vpn' ? state.vpn : 0, state.canLaunchAtLogin, state.version, state.electronVersion, state.chromiumVersion, state.profileDirectory]);
   if (page === 'bookmarks') return JSON.stringify([page, bookmarkFilter, bookmarkFolderFilter, state.bookmarks]);
   if (page === 'history') return JSON.stringify([page, historyFilter, state.history]);
   if (page === 'downloads') return JSON.stringify([page, state.downloads]);
@@ -828,9 +944,233 @@ function render() {
   $('star').setAttribute('aria-pressed', String(!!state.bookmarked));
   renderBookmarkBar();
   renderProtection();
+  renderVpnChip();
   renderInternalPage();
   renderFind();
 }
+
+// ---- VPN (browser-only proxy tunnel) -------------------------------------
+const VPN_UI = { editingId: '', passwordFor: '' };
+const VPN_GATE_UI = { servers: [], loading: false, error: '', filter: '', fetchedAt: 0 };
+const vpnTypeLabel = (id) => ((state.vpn?.types || []).find((entry) => entry.id === id) || {}).label || id;
+const VPN_STATUS_TEXT = { disconnected: 'Not connected', connecting: 'Connecting…', connected: 'Connected', error: 'Couldn’t connect' };
+
+function vpnGateCard() {
+  const needle = VPN_GATE_UI.filter.trim().toLowerCase();
+  const visible = VPN_GATE_UI.servers.filter((server) => !needle || `${server.country} ${server.countryCode} ${server.hostName} ${server.ip}`.toLowerCase().includes(needle)).slice(0, 30);
+  const rows = visible.length ? visible.map((server) => {
+    const details = [
+      server.protocol,
+      `${server.port}`,
+      server.speedMbps == null ? 'Speed n/a' : `${server.speedMbps.toLocaleString()} Mbps`,
+      server.pingMs == null ? 'Ping n/a' : `${server.pingMs} ms ping`,
+      server.sessions == null ? 'Sessions n/a' : `${server.sessions} sessions`
+    ].map(escapeHtml).join('<span class="vpn-gate-sep">·</span>');
+    const search = `${server.country} ${server.countryCode} ${server.hostName} ${server.ip}`.toLowerCase();
+    const gate = state.vpnGate || {};
+    const isActive = gate.serverId === server.id && ['connecting', 'connected', 'error'].includes(gate.status);
+    const isConnecting = isActive && gate.status === 'connecting';
+    const isConnected = isActive && gate.status === 'connected';
+    const compatibility = server.engineSupported
+      ? '<span class="vpn-gate-compatible">Drift ready</span>'
+      : server.profileSupported
+        ? `<span class="vpn-gate-incompatible" title="${escapeHtml(server.engineReason || 'VPN helper required')}">Profile compatible · helper required</span>`
+        : `<span class="vpn-gate-incompatible" title="${escapeHtml(server.engineReason || 'Unsupported profile')}">${escapeHtml(server.engineReason || 'Unsupported profile')}</span>`;
+    const connectAction = isActive
+      ? `<button class="small-action" data-action="vpn-gate-disconnect">${isConnecting ? 'Cancel' : 'Disconnect'}</button>`
+      : `<button class="small-action" data-action="vpn-gate-connect" data-id="${escapeHtml(server.id)}" ${server.engineSupported && !['connecting', 'connected'].includes(gate.status) ? '' : 'disabled'}>${server.engineSupported ? 'Connect in Drift' : server.profileSupported ? 'Build required' : 'Unavailable'}</button>`;
+    return `<div class="manager-row vpn-row vpn-gate-row ${isActive ? 'is-active' : ''}" data-vpn-gate-row data-search="${escapeHtml(search)}"><div class="extension-mark"><svg data-fa="globe"></svg></div><div class="manager-fields"><strong>${escapeHtml(server.country)} <span class="manager-meta">(${escapeHtml(server.countryCode)})</span></strong><span class="manager-url-text">${escapeHtml(server.hostName)} · ${escapeHtml(server.ip)}</span><div class="manager-meta">${details}</div><div class="manager-meta">${compatibility}${isConnected ? '<span class="vpn-tag">Connected</span>' : ''}</div></div><div class="manager-actions">${connectAction}<button class="small-action" data-action="vpn-gate-download" data-id="${escapeHtml(server.id)}">Get .ovpn</button></div></div>`;
+  }).join('') : (VPN_GATE_UI.servers.length ? '<div class="empty-state"><strong>No matching VPN Gate servers</strong><span>Try another country or server name.</span></div>' : '<div class="empty-state"><strong>Server list not loaded</strong><span>Load the live VPN Gate directory to browse public OpenVPN relays.</span></div>');
+  const updated = VPN_GATE_UI.fetchedAt ? `Updated ${new Date(VPN_GATE_UI.fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Live directory';
+  const gate = state.vpnGate || {};
+  const gateStatus = gate.status === 'connecting'
+    ? `<div class="vpn-status vpn-connecting"><span class="vpn-dot"></span><div><strong>Connecting to ${escapeHtml(gate.name || 'VPN Gate')}…</strong><small>Starting Drift’s private OpenVPN tunnel and checking the exit address. Other apps remain on your normal connection.</small></div><button class="small-action" data-action="vpn-gate-disconnect">Cancel</button></div>`
+    : gate.status === 'connected'
+      ? `<div class="vpn-status vpn-connected"><span class="vpn-dot"></span><div><strong>VPN Gate connected · ${escapeHtml(gate.country || 'Relay')}</strong><small>${gate.exitIp ? `Exit IP ${escapeHtml(gate.exitIp)} · ` : ''}Every Drift tab uses this tunnel. Other apps on your PC do not.</small></div><button class="small-action" data-action="vpn-gate-disconnect">Disconnect</button></div>`
+      : gate.status === 'error'
+        ? `<div class="vpn-status vpn-error"><span class="vpn-dot"></span><div><strong>${gate.localPort ? 'VPN tunnel stopped — Drift is fail-closed' : 'VPN Gate could not connect'}</strong><small>${escapeHtml(gate.error || 'Unknown error.')}${gate.localPort ? ' Browser requests remain blocked until you disconnect or reconnect.' : ' Drift is browsing directly.'}</small></div><button class="small-action" data-action="vpn-gate-disconnect">${gate.localPort ? 'Disconnect' : 'Dismiss'}</button></div>`
+        : '';
+  const compatibleCount = VPN_GATE_UI.servers.filter((server) => server.profileSupported).length;
+  const readyCount = VPN_GATE_UI.servers.filter((server) => server.engineSupported).length;
+  return `<div class="settings-inline-card"><div><strong>VPN Gate · built into Drift</strong><small>Connect compatible OpenVPN relays without a separate VPN app or system-wide VPN.</small></div><button class="small-action" data-action="vpn-gate-refresh" ${VPN_GATE_UI.loading ? 'disabled' : ''}>${VPN_GATE_UI.loading ? 'Loading…' : VPN_GATE_UI.servers.length ? 'Refresh list' : 'Load servers'}</button></div>
+    ${gateStatus}
+    ${VPN_GATE_UI.error ? `<p class="ext-error" role="alert">${escapeHtml(VPN_GATE_UI.error)}</p>` : ''}
+    <div class="page-toolbar vpn-gate-toolbar"><div class="page-search"><svg data-fa="search"></svg><input id="vpn-gate-search" type="search" value="${escapeHtml(VPN_GATE_UI.filter)}" placeholder="Filter by country or server" aria-label="Filter VPN Gate servers"></div><span class="toolbar-count">${VPN_GATE_UI.servers.length ? `${VPN_GATE_UI.servers.length} servers · ${compatibleCount} profile-compatible · ${readyCount} ready · ${updated}` : updated}</span></div>
+    <div class="manager-card vpn-list vpn-gate-list">${rows}</div>
+    <p class="page-muted-copy vpn-note">Drift runs a bundled userspace OpenVPN engine and TCP/IP stack, then points only its Chromium session at a loopback SOCKS5 bridge. It does not install a TUN/TAP driver, request administrator access, or change Windows routes. Other apps keep using the normal connection. WebRTC’s non-proxied UDP is disabled while the tunnel is active to prevent direct IP leaks.</p>
+    <p class="page-muted-copy vpn-note">Drift's VPN Gate engine supports AES-GCM and AES-CBC + HMAC profiles, with optional inline tls-auth/tls-crypt keys or plain TLS control channels. Compression-enabled profiles are blocked; comp-lzo no and compress stub are accepted. It pins each connection to the current IP address in VPN Gate's live directory to avoid .opengw.net DNS failures. Unsupported options (such as BF-CBC, compression, tls-crypt-v2, external key files or TAP) are shown with the exact reason. “Get .ovpn” remains available for external clients.</p>
+    ${compatibleCount > 0 && readyCount === 0 && VPN_GATE_UI.servers.some((server) => server.profileSupported && /helper has not been built/i.test(server.engineReason || '')) ? '<p class="ext-error" role="status">These profiles are compatible, but this build does not include the VPN helper yet. Run scripts\\build_vpn_helper.bat, then build and reinstall Drift.</p>' : ''}
+    <p class="page-muted-copy vpn-note">VPN Gate relays are operated by volunteers. Their availability, speed, and logging practices vary. Review the server operator and <a href="https://www.vpngate.net/en/" target="_blank" rel="noreferrer">VPN Gate’s official information</a> before connecting.</p>`;
+}
+
+async function loadVpnGateServers(force = false) {
+  if (VPN_GATE_UI.loading) return;
+  VPN_GATE_UI.loading = true;
+  VPN_GATE_UI.error = '';
+  renderSettingsContent();
+  const result = await drift.invoke('vpn-gate:list', { force }).catch((error) => ({ error: error?.message || 'Could not load VPN Gate servers.' }));
+  VPN_GATE_UI.loading = false;
+  if (result?.error) VPN_GATE_UI.error = result.error;
+  else {
+    VPN_GATE_UI.servers = Array.isArray(result?.servers) ? result.servers : [];
+    VPN_GATE_UI.fetchedAt = result?.fetchedAt || Date.now();
+    VPN_GATE_UI.error = '';
+  }
+  renderSettingsContent();
+}
+
+function vpnSection() {
+  const vpn = state.vpn || { profiles: [], status: 'disconnected', types: [] };
+  const gate = state.vpnGate || { status: 'disconnected' };
+  const active = vpn.profiles.find((entry) => entry.id === vpn.activeId);
+  const failed = vpn.status === 'error' ? vpn.profiles.find((entry) => entry.id === vpn.errorId) : null;
+  let statusHtml;
+  if (gate.status === 'connected') {
+    statusHtml = `<div class="vpn-status vpn-connected"><span class="vpn-dot"></span><div><strong>Connected to VPN Gate · ${escapeHtml(gate.country || 'Relay')}</strong><small>${gate.exitIp ? `Exit IP ${escapeHtml(gate.exitIp)} · ` : ''}Every Drift tab uses this tunnel. Other apps on your PC do not.</small></div><button class="small-action" data-action="vpn-gate-disconnect">Disconnect</button></div>`;
+  } else if (gate.status === 'connecting') {
+    statusHtml = `<div class="vpn-status vpn-connecting"><span class="vpn-dot"></span><div><strong>Connecting to ${escapeHtml(gate.name || 'VPN Gate')}…</strong><small>Establishing the OpenVPN tunnel inside Drift.</small></div><button class="small-action" data-action="vpn-gate-disconnect">Cancel</button></div>`;
+  } else if (gate.status === 'error') {
+    statusHtml = `<div class="vpn-status vpn-error"><span class="vpn-dot"></span><div><strong>${gate.localPort ? 'VPN Gate tunnel stopped' : 'VPN Gate connection failed'}</strong><small>${escapeHtml(gate.error || 'Unknown error.')}${gate.localPort ? ' Drift is fail-closed; disconnect to resume direct browsing.' : ' Drift is browsing directly.'}</small></div><button class="small-action" data-action="vpn-gate-disconnect">Disconnect</button></div>`;
+  } else if (vpn.status === 'connected' && active) {
+    statusHtml = `<div class="vpn-status vpn-connected"><span class="vpn-dot"></span><div><strong>Connected to ${escapeHtml(active.name)}</strong><small>${vpn.exitIp ? `Your address looks like ${escapeHtml(vpn.exitIp)} · ` : ''}Every Drift tab uses this VPN. Other apps on your PC do not.</small></div><button class="small-action" data-action="vpn-disconnect">Disconnect</button></div>`;
+  } else if (vpn.status === 'connecting' && active) {
+    statusHtml = `<div class="vpn-status vpn-connecting"><span class="vpn-dot"></span><div><strong>Connecting to ${escapeHtml(active.name)}…</strong><small>Checking the server and your sign-in info.</small></div><button class="small-action" data-action="vpn-disconnect">Cancel</button></div>`;
+  } else if (vpn.status === 'error') {
+    statusHtml = `<div class="vpn-status vpn-error"><span class="vpn-dot"></span><div><strong>Couldn’t connect${failed ? ` to ${escapeHtml(failed.name)}` : ''}</strong><small>${escapeHtml(vpn.error || 'Unknown error.')} Drift is browsing directly.</small></div></div>`;
+  } else {
+    statusHtml = `<div class="vpn-status vpn-disconnected"><span class="vpn-dot"></span><div><strong>Not connected</strong><small>Drift is browsing directly. Connect a VPN below to route Drift’s traffic through it.</small></div></div>`;
+  }
+  const rows = vpn.profiles.length ? vpn.profiles.map((profile) => {
+    const isActive = profile.id === vpn.activeId && (vpn.status === 'connected' || vpn.status === 'connecting');
+    const signIn = profile.signIn === 'none' ? 'No sign-in' : `${escapeHtml(profile.username)}${profile.remember ? '' : ' · asks for password'}`;
+    return `<div class="manager-row vpn-row ${isActive ? 'is-active' : ''}"><div class="extension-mark"><svg data-fa="vpn"></svg></div><div class="manager-fields"><strong>${escapeHtml(profile.name)}</strong><span class="manager-url-text">${escapeHtml(profile.server)}:${profile.port}</span><div class="manager-meta"><span>${escapeHtml(vpnTypeLabel(profile.type))}</span><span>${signIn}</span>${isActive ? `<span class="vpn-tag">${escapeHtml(VPN_STATUS_TEXT[vpn.status])}</span>` : ''}</div></div><div class="manager-actions">${isActive
+      ? '<button class="small-action" data-action="vpn-disconnect">Disconnect</button>'
+      : `<button class="small-action" data-action="vpn-connect" data-id="${escapeHtml(profile.id)}">Connect</button>`}<button class="small-action" data-action="vpn-edit" data-id="${escapeHtml(profile.id)}">Edit</button><button class="small-action remove-action" data-action="vpn-remove" data-id="${escapeHtml(profile.id)}">Remove</button></div></div>`;
+  }).join('') : `<div class="empty-state"><div class="empty-state-icon"><svg data-fa="vpn"></svg></div><strong>No VPN connections yet</strong><span>Add a server from your VPN or proxy provider to get started.</span></div>`;
+  return {
+    title: 'VPN', intro: 'Route Drift’s traffic through a server of your choice. Only this browser is affected.',
+    cards: [
+      ['Status', '', statusHtml],
+      ['Your connections', 'Add a connection like you would in Windows, then press Connect.',
+        `<div class="settings-inline-card"><div><strong>Add a VPN connection</strong><small>HTTPS proxy, HTTP proxy or SOCKS5, with a user name and password.</small></div><button class="small-action" data-action="vpn-add">Add VPN</button></div><div class="manager-card vpn-list">${rows}</div>`],
+      ['How Drift’s built-in proxy works', '',
+        `<p class="page-muted-copy vpn-note">The built-in Drift connection accepts HTTPS, HTTP, or SOCKS5 proxy endpoints and applies them to Drift’s own browser session. While connected, Drift does not fall back to a direct connection if the proxy fails. WebRTC is restricted to help prevent direct-address leaks. Saved passwords are encrypted with your Windows account.</p><p class="page-muted-copy vpn-note">VPN Gate’s directory provides OpenVPN tunnels rather than browser proxy URLs. Drift bridges supported VPN Gate profiles to a private loopback SOCKS5 proxy and applies it only to this browser session; no external VPN client or system-wide route is used.</p>`],
+      ['VPN Gate directory', 'Browse current public OpenVPN relays from VPN Gate.', vpnGateCard()]
+    ]
+  };
+}
+
+function renderVpnChip() {
+  const vpn = state.vpn || {};
+  const gate = state.vpnGate || {};
+  const gateOn = ['connected', 'connecting'].includes(gate.status) || (gate.status === 'error' && !!gate.localPort);
+  const on = gateOn || vpn.status === 'connected' || vpn.status === 'connecting';
+  const chip = $('vpn-btn');
+  chip.classList.toggle('hidden', !on);
+  if (!on) return;
+  const active = (vpn.profiles || []).find((entry) => entry.id === vpn.activeId);
+  const connecting = gateOn ? gate.status === 'connecting' : vpn.status === 'connecting';
+  chip.classList.toggle('connecting', connecting || gate.status === 'error');
+  $('vpn-chip-label').textContent = connecting ? 'Connecting…' : (gateOn ? 'VPN Gate' : (active?.name || 'VPN'));
+  chip.title = gateOn
+    ? `${gate.status === 'error' ? 'Tunnel stopped — fail-closed' : VPN_STATUS_TEXT[gate.status] || 'VPN'}${gate.country ? ` · ${gate.country}` : ''}${gate.exitIp ? ` (${gate.exitIp})` : ''}`
+    : `${VPN_STATUS_TEXT[vpn.status]}${active ? ` to ${active.name}` : ''}${vpn.exitIp ? ` (${vpn.exitIp})` : ''}`;
+}
+$('vpn-btn').addEventListener('click', () => { currentSettingsSection = 'vpn'; lastPageRenderKey = ''; drift.cmd('go', 'drift://settings'); if (state.internalPage === 'settings') renderInternalPage(true); });
+
+function vpnHint() {
+  const type = $('vpn-type').value;
+  const text = {
+    https: 'Traffic to the server is encrypted with TLS. The most private choice here.',
+    http: 'The connection to the server itself is not encrypted. HTTPS websites stay encrypted end to end.',
+    socks5: 'Works with most providers. Drift signs in for you, and website names are looked up by the server.'
+  }[type] || '';
+  $('vpn-hint').textContent = `${text} SSTP, L2TP, IKEv2, OpenVPN and WireGuard can’t run inside a browser.`;
+}
+function vpnSyncSignIn() {
+  const none = $('vpn-signin').value === 'none';
+  $('vpn-creds').classList.toggle('is-disabled', none);
+  $('vpn-user').disabled = none; $('vpn-pass').disabled = none;
+  $('vpn-remember-row').classList.toggle('hidden', none);
+}
+function vpnShowError(message) {
+  $('vpn-error').textContent = message || '';
+  $('vpn-error').classList.toggle('hidden', !message);
+}
+function openVpnDialog(id) {
+  const vpn = state.vpn || { profiles: [], types: [] };
+  const profile = id ? vpn.profiles.find((entry) => entry.id === id) : null;
+  VPN_UI.editingId = profile ? profile.id : '';
+  $('vpn-title').textContent = profile ? 'Edit VPN connection' : 'Add a VPN connection';
+  $('vpn-type').innerHTML = vpn.types.map((type) => `<option value="${escapeHtml(type.id)}">${escapeHtml(type.label)}</option>`).join('');
+  const type = profile?.type || 'https';
+  $('vpn-name').value = profile?.name || '';
+  $('vpn-server').value = profile?.server || '';
+  $('vpn-type').value = type;
+  $('vpn-port').value = String(profile?.port || (vpn.types.find((entry) => entry.id === type) || {}).defaultPort || 443);
+  $('vpn-port').dataset.auto = profile ? '' : '1';
+  $('vpn-signin').value = profile?.signIn || 'password';
+  $('vpn-user').value = profile?.username || '';
+  $('vpn-pass').value = '';
+  $('vpn-pass').placeholder = profile?.hasPassword ? 'Saved — leave blank to keep' : '';
+  $('vpn-remember').checked = profile ? profile.remember : true;
+  $('vpn-remember').disabled = vpn.canStorePasswords === false;
+  if (vpn.canStorePasswords === false) $('vpn-remember').checked = false;
+  vpnShowError('');
+  vpnSyncSignIn(); vpnHint();
+  $('vpn-save').disabled = false;
+  openDialog('vpnDialog');
+  setTimeout(() => $(profile ? 'vpn-name' : 'vpn-name').focus(), 30);
+}
+$('vpn-type').addEventListener('change', () => {
+  const type = (state.vpn?.types || []).find((entry) => entry.id === $('vpn-type').value);
+  const port = $('vpn-port');
+  const known = (state.vpn?.types || []).some((entry) => String(entry.defaultPort) === port.value.trim());
+  if (type && (!port.value.trim() || port.dataset.auto === '1' || known)) { port.value = String(type.defaultPort); port.dataset.auto = '1'; }
+  vpnHint();
+});
+$('vpn-port').addEventListener('input', () => { $('vpn-port').dataset.auto = ''; });
+$('vpn-signin').addEventListener('change', vpnSyncSignIn);
+async function saveVpnDialog() {
+  const button = $('vpn-save');
+  if (button.disabled) return;
+  button.disabled = true; vpnShowError('');
+  const payload = {
+    id: VPN_UI.editingId || undefined,
+    name: $('vpn-name').value, server: $('vpn-server').value, type: $('vpn-type').value, port: $('vpn-port').value.trim(),
+    signIn: $('vpn-signin').value, username: $('vpn-user').value, password: $('vpn-pass').value, remember: $('vpn-remember').checked
+  };
+  const result = await drift.invoke('vpn:save', payload).catch((error) => ({ error: error.message || 'Could not save the connection.' }));
+  $('vpn-pass').value = '';
+  if (result?.error) { vpnShowError(result.error); button.disabled = false; return; }
+  closeDialog('vpnDialog');
+}
+$('vpn-save').addEventListener('click', saveVpnDialog);
+$('vpnDialog').addEventListener('keydown', (event) => { if (event.key === 'Enter' && event.target.tagName !== 'SELECT' && event.target.tagName !== 'BUTTON') { event.preventDefault(); saveVpnDialog(); } });
+
+function vpnConnect(id) {
+  const profile = (state.vpn?.profiles || []).find((entry) => entry.id === id);
+  if (!profile) return;
+  if (profile.signIn === 'password' && !profile.hasPassword) { // “Remember” was off: ask now, never store
+    VPN_UI.passwordFor = id;
+    $('vpn-pw-sub').textContent = `Enter the password for ${profile.username} on ${profile.name}.`;
+    $('vpn-pw-input').value = '';
+    openDialog('vpnPasswordDialog');
+    setTimeout(() => $('vpn-pw-input').focus(), 30);
+    return;
+  }
+  drift.invoke('vpn:connect', id).catch(() => {});
+}
+function submitVpnPassword() {
+  const password = $('vpn-pw-input').value;
+  if (!password) { $('vpn-pw-input').focus(); return; }
+  const id = VPN_UI.passwordFor;
+  $('vpn-pw-input').value = '';
+  closeDialog('vpnPasswordDialog');
+  drift.invoke('vpn:connect', id, { password }).catch(() => {});
+}
+$('vpn-pw-submit').addEventListener('click', submitVpnPassword);
+$('vpn-pw-input').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); submitVpnPassword(); } });
 
 const dialogCloseHooks = {};
 
@@ -1156,6 +1496,8 @@ $('page-main').addEventListener('change', (event) => {
   else if (id === 'show-home-setting') saveSetting({ showHomeButton: event.target.checked });
   else if (id === 'window-start-setting') saveSetting({ windowStart: event.target.value });
   else if (id === 'launch-login-setting') saveSetting({ launchAtLogin: event.target.checked });
+  else if (id === 'auto-update-setting') saveSetting({ autoUpdate: event.target.checked });
+  else if (id === 'usage-reports-setting') saveSetting({ usageReports: event.target.checked });
   else if (id === 'newtab-opens-setting') saveSetting({ newTabOpens: event.target.value });
   else if (id === 'newtab-shortcuts-setting') saveSetting({ newTabShortcuts: event.target.value });
   else if (id === 'newtab-clock-setting') saveSetting({ newTabClock: event.target.checked });
@@ -1184,6 +1526,11 @@ $('page-main').addEventListener('input', (event) => {
   if (event.target.classList?.contains('page-input')) event.target.classList.remove('invalid');
   if (event.target.id === 'bookmark-search') { bookmarkFilter = event.target.value; const start = event.target.selectionStart; renderBookmarksPage(); lastPageRenderKey = currentPageRenderKey(); $('bookmark-search').focus(); $('bookmark-search').setSelectionRange(start, start); }
   if (event.target.id === 'history-search') { historyFilter = event.target.value; const start = event.target.selectionStart; renderHistoryPage(); lastPageRenderKey = currentPageRenderKey(); $('history-search').focus(); $('history-search').setSelectionRange(start, start); }
+  if (event.target.id === 'vpn-gate-search') {
+    VPN_GATE_UI.filter = event.target.value;
+    const needle = VPN_GATE_UI.filter.trim().toLowerCase();
+    document.querySelectorAll('[data-vpn-gate-row]').forEach((row) => { row.classList.toggle('hidden', !!needle && !row.dataset.search.includes(needle)); });
+  }
 });
 $('page-main').addEventListener('submit', (event) => {
   if (event.target.id === 'startup-add-form') {
@@ -1230,6 +1577,42 @@ $('page-main').addEventListener('click', async (event) => {
     drift.cmd('new', 'https://chromewebstore.google.com/category/extensions');
   } else if (action === 'open-store-dialog') {
     openStoreDialog();
+  } else if (action === 'vpn-add') {
+    openVpnDialog('');
+  } else if (action === 'vpn-edit') {
+    openVpnDialog(button.dataset.id);
+  } else if (action === 'vpn-connect') {
+    vpnConnect(button.dataset.id);
+  } else if (action === 'vpn-disconnect') {
+    drift.invoke('vpn:disconnect').catch(() => {});
+  } else if (action === 'vpn-remove') {
+    const profile = (state.vpn?.profiles || []).find((entry) => entry.id === button.dataset.id);
+    const confirmed = await showConfirm({
+      title: `Remove “${profile?.name || 'this connection'}”?`,
+      message: 'The connection and its saved password will be deleted from this device.',
+      confirmLabel: 'Remove', danger: true
+    });
+    if (confirmed) drift.invoke('vpn:delete', button.dataset.id).catch(() => {});
+  } else if (action === 'vpn-gate-refresh') {
+    await loadVpnGateServers(VPN_GATE_UI.servers.length > 0);
+  } else if (action === 'vpn-gate-connect') {
+    button.disabled = true; button.textContent = 'Connecting…';
+    const result = await drift.invoke('vpn-gate:connect', button.dataset.id).catch((error) => ({ error: error?.message || 'Could not connect to this VPN Gate relay.' }));
+    if (result?.error) await showAlert(result.error, 'VPN Gate connection failed');
+    renderSettingsContent();
+  } else if (action === 'vpn-gate-disconnect') {
+    button.disabled = true; button.textContent = 'Disconnecting…';
+    await drift.invoke('vpn-gate:disconnect').catch(() => {});
+    renderSettingsContent();
+  } else if (action === 'vpn-gate-download') {
+    button.disabled = true; button.textContent = 'Preparing…';
+    const result = await drift.invoke('vpn-gate:download', button.dataset.id).catch((error) => ({ error: error?.message || 'Could not export this profile.' }));
+    if (result?.error) await showAlert(result.error, 'Couldn’t export OpenVPN profile');
+    else if (result?.ok) await showAlert(`Saved the OpenVPN profile to:
+${result.filePath}
+
+This profile is for an external OpenVPN client. VPN Gate’s shared credentials are vpn / vpn.`, 'OpenVPN profile saved');
+    button.disabled = false; button.textContent = 'Get .ovpn';
   } else if (action === 'remove-extension') {
     const extension = (state.extensions || []).find((entry) => entry.id === button.dataset.id);
     const confirmed = await showConfirm({

@@ -1,0 +1,82 @@
+DRIFT 1.3.2 — BROWSER-ONLY VPN GATE IMPLEMENTATION NOTES
+
+Implemented in this source update
+---------------------------------
+- Settings > VPN fetches and parses the live public VPN Gate OpenVPN relay list.
+- Relay cards show why a profile is unavailable instead of using a generic
+  unsupported label. The Connect button is enabled only when both the bundled
+  helper exists and the sanitized profile passes the compatibility checks.
+- Added a browser-scoped OpenVPN-to-SOCKS5 connection controller. Drift starts
+  its helper as a child process, writes a constrained temporary .ovpn profile,
+  binds only to 127.0.0.1, and points Electron's browser session at that port.
+- The profile endpoint is replaced with the IP address, port and transport from
+  the current VPN Gate CSV row. This avoids relying on public-vpn-*.opengw.net
+  DNS names where DNS lookup of those names is unavailable.
+- The pinned OpenVPN engine supports AES-GCM and AES-CBC + HMAC data channels,
+  optional inline tls-auth/tls-crypt keys, and profiles with an unwrapped TLS
+  control channel. CBC with BF-CBC, data-ciphers negotiation directives,
+  active compression, TAP, tls-crypt-v2, external key-file references and other
+  unsupported profile features remain unavailable by design. Explicitly disabled
+  compression (`comp-lzo no`, `compress stub`/`stub-v2`, `allow-compression no`
+  or `asym`) is accepted. Active compression remains blocked because of the
+  VORACLE risk.
+- Drift supplies VPN Gate's public relay credentials (`vpn` / `vpn`) to profiles
+  that request username/password authentication. These are public shared
+  credentials, not user-specific secrets.
+- Drift verifies the public exit IP through the proxied browser session before
+  displaying Connected. Disconnect restores the browser session's previous
+  system proxy mode and closes pooled browser connections. An unexpected helper
+  exit leaves Drift pointed at the dead local proxy (fail-closed) until the user
+  disconnects or reconnects.
+- The browser-only path does not create a Windows TUN device, install a driver,
+  request elevation, change the system routing table, or route other apps.
+- WebRTC's non-proxied UDP path is restricted while the VPN is active. SOCKS5
+  requests carry destination hostnames to the helper; DNS resolution uses the
+  userspace tunnel's VPN-provided resolver, not a host DNS fallback.
+- Downloaded profile script hooks, plugins, includes, route changes and external
+  key-file paths are not executed or retained in exported/saved profiles.
+- Added a pinned Windows helper build pipeline. It downloads go-openvpn commit
+  2aa84a33b136, vendors dependencies, builds a Windows x64 helper, and packages
+  the matching vendored corresponding-source archive, LGPL license, usage
+  exception and engine version metadata. Windows packaging fails if those
+  helper artifacts are absent.
+- Tests exercise the VPN Gate CSV parser, AES-CBC + HMAC profile recognition,
+  inline tls-auth and plain TLS profile recognition, rejection of unsupported
+  features, IP-pinned profile sanitization, browser-session proxy activation,
+  exit-IP verification and disconnect cleanup.
+
+Engine compatibility limits
+---------------------------
+VPN Gate publishes OpenVPN relay profiles rather than browser-native proxy
+endpoints. Drift runs the OpenVPN client and a gVisor userspace IP stack inside
+a dedicated helper process, then exposes a loopback SOCKS5 endpoint to Drift's
+Electron session. Only Drift tabs use this tunnel; unrelated Windows apps use
+their ordinary network. The browser session is not protected by a system-wide
+kill switch. Sites may disable peer-to-peer features while WebRTC UDP is
+restricted. Public VPN Gate relays are volunteer-operated; availability,
+reachability, configuration, speed and logging practices vary. A profile being
+compatible does not guarantee the volunteer relay is online or will accept a
+connection at that moment.
+
+Build / licensing
+-----------------
+- Run scripts\build_vpn_helper.bat before building a Windows package, or run
+  build_publish.bat, which calls it as part of the release flow.
+- The helper build requires Go 1.25.5 or newer, Windows PowerShell, and internet
+  access to download the pinned source and Go dependencies. GOTOOLCHAIN=auto
+  selects the Go version declared by the pinned module.
+- The pinned OpenVPN implementation is LGPL-2.1-or-later with a usage exception.
+  The build includes its exact vendored corresponding source, license and
+  exception. gVisor and all other dependency notices remain in that source
+  archive. Drift's own root license is unchanged.
+
+Verification in this environment
+--------------------------------
+- VPN Gate Node.js tests pass, including real profile-shape fixtures for AES-CBC
+  + HMAC, inline tls-auth, plain TLS, IP pinning and browser proxy lifecycle.
+- JavaScript syntax and project preflight are checked separately.
+- This Linux sandbox has Go 1.23.2, no installed npm dependency tree and no
+  outbound source-download access. It cannot compile the pinned Go 1.25.5 helper,
+  produce a Windows installer, or verify a live VPN Gate relay. The updated ZIP
+  therefore contains the corrected Drift source and reproducible Windows helper
+  build pipeline, not a precompiled/verified Windows VPN-enabled installer.

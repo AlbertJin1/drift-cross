@@ -1,0 +1,21 @@
+Drift Browser VPN Gate helper
+
+The openvpn2socks.exe sidecar is built from github.com/buengese/go-openvpn at
+pinned source commit 2aa84a33b136, with Drift's SOCKS5 bridge source added under
+cmd/drift-vpngate-proxy. The OpenVPN implementation is licensed under
+LGPL-2.1-or-later with a usage exception. The corresponding source archive,
+license and usage exception are included in packaged builds as:
+  GO-OPENVPN-CORRESPONDING-SOURCE.zip
+  GO-OPENVPN-LICENSE.txt
+  GO-OPENVPN-LICENSE-EXCEPTION.txt
+  ENGINE-VERSION.txt
+
+The userspace TCP/IP stack uses gVisor (Apache-2.0). Other vendored dependency
+licenses and notices are retained in the corresponding source archive.
+
+The helper uses an in-process userspace network stack and binds a SOCKS5 TCP
+proxy to 127.0.0.1 only. It does not create a Windows TUN/TAP adapter, change
+host routes, change system DNS, modify firewall rules, or request elevation.
+Only the Drift browser session is configured to use this proxy.
+
+Drift itself remains separately licensed under the license at the project root.
