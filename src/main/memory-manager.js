@@ -14,14 +14,14 @@
 const KB = 1024;
 
 const DEFAULTS = {
-  idleMs: 5 * 60 * 1000,            // normal idle expiry for background tabs
-  idleMsPressure1: 2 * 60 * 1000,   // moderate pressure
-  idleMsPressure2: 60 * 1000,       // high pressure
-  newTabIdleMs: 45 * 1000,          // idle New Tab pages
-  maxBackgroundLive: 6,             // background tabs allowed to keep a renderer
-  capMinIdleMs: 60 * 1000,          // a tab used in the last minute is never dropped by the cap
-  pressureMinIdleMs: 20 * 1000,     // under high pressure, tabs idle this long may be released early
-  pressureReleasePerPass: 2         // ...at most this many per pass, heaviest first
+  idleMs: 3 * 60 * 1000,            // normal idle expiry for background tabs
+  idleMsPressure1: 75 * 1000,       // moderate pressure
+  idleMsPressure2: 40 * 1000,       // high pressure
+  newTabIdleMs: 20 * 1000,          // idle New Tab pages
+  maxBackgroundLive: 4,             // background tabs allowed to keep a renderer
+  capMinIdleMs: 45 * 1000,          // a tab used in the last 45 s is never dropped by the cap
+  pressureMinIdleMs: 15 * 1000,     // under high pressure, tabs idle this long may be released early
+  pressureReleasePerPass: 3         // ...at most this many per pass, heaviest first
 };
 
 /**
@@ -72,7 +72,7 @@ function planDiscards(tabs, { now, pressure = 0, config = {} }) {
  * Reads how much memory pressure Drift is under.
  * Level 2 = high, 1 = moderate, 0 = fine. Also returns per-process memory by OS pid.
  *
- * Drift's own footprint is compared with a budget of 35% of system RAM (never below 1.5 GB).
+ * Drift's own footprint is compared with a budget of 30% of system RAM (never below 1.25 GB).
  * On Windows `free` already counts reclaimable standby memory, so it is also used directly;
  * on macOS and Linux `free` excludes the file cache and would report false pressure.
  */
@@ -84,8 +84,8 @@ function measurePressure({ getSystemMemoryInfo, getAppMetrics, isWindows }) {
     totalKB = Number(system.total) || 0;
     if (isWindows && totalKB) {
       const freeRatio = (Number(system.free) || 0) / totalKB;
-      if (freeRatio < 0.10) result.level = 2;
-      else if (freeRatio < 0.20) result.level = 1;
+      if (freeRatio < 0.12) result.level = 2;
+      else if (freeRatio < 0.25) result.level = 1;
     }
   } catch { /* not available on this platform */ }
   try {
@@ -97,7 +97,7 @@ function measurePressure({ getSystemMemoryInfo, getAppMetrics, isWindows }) {
       result.byPid.set(metric.pid, kb);
     }
   } catch { /* metrics unavailable */ }
-  const budgetKB = Math.max(1.5 * 1024 * KB, totalKB * 0.35);
+  const budgetKB = Math.max(1.25 * 1024 * KB, totalKB * 0.30);
   if (result.usedKB > budgetKB) result.level = 2;
   else if (result.usedKB > budgetKB * 0.7) result.level = Math.max(result.level, 1);
   return result;

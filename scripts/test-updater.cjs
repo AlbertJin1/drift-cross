@@ -1,7 +1,7 @@
 'use strict';
 
-// Exercises src/main/updater.js against a fake monitor gateway. No Electron and no Windows needed:
-//   npm run test:updater
+// Exercises src/main/updater.js against a fake Universal App Monitor client gateway (resource=update). No Electron and
+// no Windows needed:   npm run test:updater
 // The helper script that Windows runs is only checked as text here; its first real run is the end-to-end test.
 
 const assert = require('node:assert/strict');
@@ -19,29 +19,43 @@ async function test(name, fn) {
 
 const payload = Buffer.concat([Buffer.from('MZ'), crypto.randomBytes(300 * 1024)]);
 const sha256 = crypto.createHash('sha256').update(payload).digest('hex');
+const GATEWAY_PATH = '/m/api/client-gateway.php';
 
 function startGateway(state) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
-    const q = Object.fromEntries(url.searchParams);
-    state.requests.push(q);
-    if (q.action === 'latest') {
-      res.setHeader('content-type', 'application/json');
-      const current = q.version;
-      const available = state.latestVersion !== current;
-      res.end(JSON.stringify({
-        ok: true, app_id: 'drift', status: available ? 'update_available' : 'up_to_date', update_available: available,
-        latest: { version: state.latestVersion, sha256: state.announcedSha, size: payload.length, notes: 'Notes' }
-      }));
-    } else if (q.action === 'download') {
-      state.downloads += 1;
-      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': payload.length, 'x-content-sha256': sha256 });
-      res.end(state.corruptDownload ? Buffer.concat([Buffer.from('MZ'), crypto.randomBytes(payload.length - 2)]) : payload);
-    } else {
-      res.statusCode = 400; res.end('{}');
+    state.requests.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), headers: req.headers });
+    if (url.pathname !== GATEWAY_PATH || url.searchParams.get('resource') !== 'update') { res.statusCode = 404; return res.end('{}'); }
+    const action = url.searchParams.get('action');
+    if (action === 'latest') {
+      state.apiCalls += 1;
+      if (state.apiStatus) { res.writeHead(state.apiStatus, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'simulated' })); }
+      if (state.splash) { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<html>tunnel</html>'); }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (!state.withRelease) return res.end(JSON.stringify({ ok: true, app_id: 'drift', latest: null, status: 'no_release', update_available: false }));
+      const current = url.searchParams.get('version');
+      const flag = state.flag === null ? (compareVersions(current, state.latestVersion) === -1) : state.flag;
+      const latest = { version: state.latestVersion, notes: 'Notes', size: payload.length, released_at: 1 };
+      if (state.announce) latest.sha256 = state.announcedSha;
+      return res.end(JSON.stringify({ ok: true, app_id: 'drift', latest, latest_version: state.latestVersion, status: flag ? 'update_available' : 'up_to_date', update_available: flag }));
     }
+    if (action === 'download' && url.searchParams.get('version') === state.latestVersion) {
+      state.downloads += 1;
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': payload.length });
+      return res.end(state.corruptDownload ? Buffer.concat([Buffer.from('MZ'), crypto.randomBytes(payload.length - 2)]) : payload);
+    }
+    res.statusCode = 400; res.end('{}');
   });
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
+}
+
+function testConfig(server, extra = {}) {
+  const base = `http://127.0.0.1:${server.address().port}`;
+  return {
+    appId: 'drift', gatewayUrl: `${base}${GATEWAY_PATH}`, fallbackGatewayUrls: [], allowInsecure: true,
+    firstCheckDelayMs: 1e9, checkIntervalMs: 1e9, stallTimeoutMs: 5000, requestTimeoutMs: 5000,
+    maxInstallAttempts: 3, minInstallerBytes: 1024, maxInstallerBytes: 1e9, ...extra
+  };
 }
 
 function fixture(server, options = {}) {
@@ -66,19 +80,15 @@ function fixture(server, options = {}) {
     spawn: (...args) => { spawned.push(args); return { on() {}, unref() {} }; },
     isEnabled: () => flags.enabled,
     applyWaitMs: 3000,
-    config: {
-      appId: 'drift', gatewayUrl: `http://127.0.0.1:${server.address().port}/api/client-gateway.php`, allowInsecure: true,
-      firstCheckDelayMs: 1e9, checkIntervalMs: 1e9, stallTimeoutMs: 5000, requestTimeoutMs: 5000,
-      maxInstallAttempts: 3, minInstallerBytes: 1024, maxInstallerBytes: 1e9
-    }
+    config: testConfig(server)
   });
   return { root, installDir, fakeApp, flags, updater, spawned };
 }
 
 (async () => {
-  const state = { requests: [], downloads: 0, latestVersion: '1.4.0', announcedSha: sha256, corruptDownload: false };
+  const state = { requests: [], downloads: 0, apiCalls: 0, apiStatus: 0, withRelease: true, announce: true, splash: false, flag: null, latestVersion: '1.4.0', announcedSha: sha256, corruptDownload: false };
   const server = await startGateway(state);
-  const reset = () => { state.requests.length = 0; state.downloads = 0; state.latestVersion = '1.4.0'; state.announcedSha = sha256; state.corruptDownload = false; };
+  const reset = () => { state.requests.length = 0; state.downloads = 0; state.apiCalls = 0; state.apiStatus = 0; state.withRelease = true; state.announce = true; state.splash = false; state.flag = null; state.latestVersion = '1.4.0'; state.announcedSha = sha256; state.corruptDownload = false; };
 
   await test('version comparison', () => {
     assert.equal(compareVersions('1.3.1', '1.4.0'), -1);
@@ -102,14 +112,21 @@ function fixture(server, options = {}) {
     assert.throws(() => buildApplyScript({ pid: 1, installer: 'a"b', installDir: 'D', exe: 'E', lock: 'L', pending: 'P', log: 'G' }));
   });
 
-  await test('check downloads, verifies and stages an update; a second check does not download again', async () => {
+  await test('check asks the monitor, then downloads, verifies and stages; a second check does not download again', async () => {
     reset();
     const f = fixture(server);
     assert.equal(await f.updater.checkAndStage(), 'staged');
-    const latest = state.requests.find((r) => r.action === 'latest');
-    assert.equal(latest.app_id, 'drift');
-    assert.equal(latest.version, '1.3.1');
-    assert.match(latest.install_id, /^[a-f0-9]{32}$/);
+    const ask = state.requests.find((r) => r.query.action === 'latest');
+    assert.equal(ask.query.resource, 'update');
+    assert.equal(ask.query.app_id, 'drift');
+    assert.equal(ask.query.version, '1.3.1');
+    assert.equal(ask.query.platform, 'windows');
+    assert.match(ask.query.install_id, /^[a-f0-9]{32}$/);
+    assert.ok(ask.query.hostname, 'the PC name is sent so the monitor folds this PC into one install row');
+    assert.match(ask.headers['user-agent'], /^Drift\/1\.3\.1$/);
+    const get = state.requests.find((r) => r.query.action === 'download');
+    assert.equal(get.query.version, '1.4.0');
+    assert.equal(get.query.app_id, 'drift');
     assert.equal(state.downloads, 1);
     const pending = JSON.parse(fs.readFileSync(f.updater.paths.pending, 'utf8'));
     assert.equal(pending.version, '1.4.0');
@@ -120,13 +137,62 @@ function fixture(server, options = {}) {
     assert.equal(f.spawned.length, 0, 'nothing is installed while Drift is running');
   });
 
-  await test('the install id is stable between checks', async () => {
+  await test('the install id (shared with usage reporting) is stable and is what the monitor receives', async () => {
     reset();
     const f = fixture(server);
     await f.updater.checkAndStage();
     await f.updater.checkAndStage();
-    const ids = state.requests.filter((r) => r.action === 'latest').map((r) => r.install_id);
-    assert.equal(new Set(ids).size, 1);
+    const id = f.updater.installId();
+    assert.match(id, /^[a-f0-9]{32}$/);
+    assert.equal(f.updater.installId(), id);
+    for (const r of state.requests.filter((x) => x.query.action === 'latest')) assert.equal(r.query.install_id, id);
+    assert.equal(f.updater.adoptInstallId('A'.repeat(32).toLowerCase()), true);
+    assert.equal(f.updater.installId(), 'a'.repeat(32));
+    assert.equal(f.updater.adoptInstallId('nope'), false);
+  });
+
+  await test('"newer" is the monitor flag OR our own comparison, but never a downgrade', async () => {
+    reset(); state.flag = true; state.latestVersion = '1.4.0';
+    let f = fixture(server);
+    assert.equal(await f.updater.checkAndStage(), 'staged'); // flag says update
+    reset(); state.flag = false; state.latestVersion = '1.4.0';
+    f = fixture(server);
+    assert.equal(await f.updater.checkAndStage(), 'staged'); // flag missed it, our comparison catches it
+    reset(); state.flag = true; state.latestVersion = '1.2.0';
+    f = fixture(server);
+    assert.equal(await f.updater.checkAndStage(), 'up-to-date'); // a stale flag cannot downgrade
+    assert.equal(state.downloads, 0);
+  });
+
+  await test('an answer without a SHA-256 checksum is refused', async () => {
+    reset(); state.announce = false;
+    const f = fixture(server);
+    assert.equal(await f.updater.checkAndStage(), 'error');
+    assert.equal(state.downloads, 0);
+  });
+
+  await test('a wrong announced checksum means the download is discarded', async () => {
+    reset(); state.announcedSha = crypto.randomBytes(32).toString('hex');
+    const f = fixture(server);
+    assert.equal(await f.updater.checkAndStage(), 'error');
+    assert.ok(!fs.existsSync(f.updater.paths.pending));
+  });
+
+  await test('no published release (latest: null) simply means up to date', async () => {
+    reset(); state.withRelease = false;
+    const f = fixture(server);
+    assert.equal(await f.updater.checkAndStage(), 'up-to-date');
+    assert.equal(state.downloads, 0);
+  });
+
+  await test('a monitor outage, rate limit or tunnel splash page is a retryable error, not an update', async () => {
+    for (const status of [503, 429, 500]) {
+      reset(); state.apiStatus = status;
+      assert.equal(await fixture(server).updater.checkAndStage(), 'error');
+    }
+    reset(); state.splash = true;
+    assert.equal(await fixture(server).updater.checkAndStage(), 'error');
+    assert.equal(state.downloads, 0);
   });
 
   await test('a download that fails the SHA-256 check is discarded', async () => {
@@ -160,9 +226,9 @@ function fixture(server, options = {}) {
     f.fakeApp.handlers['will-quit']();
     assert.equal(f.spawned.length, 1);
     const [command, args, options] = f.spawned[0];
-    assert.equal(command, 'cmd.exe');
-    assert.deepEqual(args.slice(0, 3), ['/d', '/s', '/c']);
-    assert.equal(args[3], `""${f.updater.paths.cmd}""`);
+    assert.equal(command, 'conhost.exe');
+    assert.deepEqual(args.slice(0, 5), ['--headless', 'cmd.exe', '/d', '/s', '/c']);
+    assert.equal(args[5], `""${f.updater.paths.cmd}""`);
     assert.equal(options.detached, true);
     assert.equal(options.windowsHide, true);
     assert.notEqual(path.resolve(options.cwd), path.resolve(f.installDir), 'helper must not sit inside the install folder');
@@ -194,7 +260,7 @@ function fixture(server, options = {}) {
     const restarted = createUpdater({ // a fresh updater over the same profile, as after a restart
       app: f.fakeApp, force: true, execPath: path.join(f.installDir, 'Drift.exe'), fetch, isEnabled: () => true, applyWaitMs: 3000,
       spawn: (...args) => { f.spawned.push(args); return { on() {}, unref() {} }; },
-      config: { appId: 'drift', gatewayUrl: 'http://127.0.0.1:1/', allowInsecure: true, firstCheckDelayMs: 1e9, checkIntervalMs: 1e9, stallTimeoutMs: 1000, requestTimeoutMs: 1000, maxInstallAttempts: 3, minInstallerBytes: 1024, maxInstallerBytes: 1e9 }
+      config: testConfig(server)
     });
     assert.equal(await restarted.prepareStartup(), 'exit');
     assert.equal(f.spawned.length, 1);
@@ -261,7 +327,7 @@ function fixture(server, options = {}) {
     reset();
     const f = fixture(server);
     const blocked = createUpdater({ app: f.fakeApp, force: true, execPath: path.join(f.root, 'does-not-exist', 'Drift.exe'), fetch, isEnabled: () => true, spawn() {},
-      config: { appId: 'drift', gatewayUrl: 'http://127.0.0.1:1/', allowInsecure: true } });
+      config: testConfig(server) });
     assert.equal(blocked.supported(), false);
     assert.equal(await blocked.checkAndStage(), 'unsupported');
   });
@@ -269,18 +335,18 @@ function fixture(server, options = {}) {
   await test('unsupported platforms and development runs never contact the server', async () => {
     reset();
     const f = fixture(server);
-    const mac = createUpdater({ app: f.fakeApp, platform: 'darwin', fetch, config: { appId: 'drift', gatewayUrl: 'http://127.0.0.1:1/', allowInsecure: true } });
+    const mac = createUpdater({ app: f.fakeApp, platform: 'darwin', fetch, config: testConfig(server) });
     assert.equal(await mac.checkAndStage(), 'unsupported');
-    const dev = createUpdater({ app: { ...f.fakeApp, isPackaged: false }, platform: 'win32', arch: 'x64', fetch, config: { appId: 'drift', gatewayUrl: 'http://127.0.0.1:1/', allowInsecure: true } });
+    const dev = createUpdater({ app: { ...f.fakeApp, isPackaged: false }, platform: 'win32', arch: 'x64', fetch, config: testConfig(server) });
     assert.equal(await dev.checkAndStage(), 'unsupported');
     assert.equal(state.requests.length, 0);
   });
 
-  await test('a plain-HTTP gateway address is refused', async () => {
+  await test('a plain-HTTP monitor address is refused', async () => {
     reset();
     const f = fixture(server);
     const insecure = createUpdater({ app: f.fakeApp, force: true, execPath: path.join(f.installDir, 'Drift.exe'), fetch, isEnabled: () => true, spawn() {},
-      config: { appId: 'drift', gatewayUrl: `http://127.0.0.1:${server.address().port}/x`, requestTimeoutMs: 1000 } });
+      config: testConfig(server, { allowInsecure: false }) });
     assert.equal(await insecure.checkAndStage(), 'error');
     assert.equal(state.requests.length, 0);
   });

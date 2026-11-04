@@ -48,9 +48,11 @@ button:disabled{opacity:.3;cursor:not-allowed}button:focus-visible,.pill:focus-v
 .track{height:4px;width:440px;border-radius:9px;background:var(--card);margin-top:26px;overflow:hidden}
 .track b{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--b),var(--a));border-radius:9px;transition:width .3s}
 .err{color:#ff7d8d;margin-bottom:18px;max-width:480px}
-body.light .k,body.light #phase{color:var(--a)}</style></head><body>
+#credit{position:absolute;right:30px;bottom:24px;z-index:4;font-size:11.5px;color:var(--mut);letter-spacing:.02em;text-align:right;line-height:1.4;pointer-events:none}#credit b{color:var(--fg);font-weight:600}#credit em{font-style:normal;color:var(--b);font-weight:600}
+body.light .k,body.light #phase,body.light #credit em{color:var(--a)}</style></head><body>
 <div id="win"><canvas id="c"></canvas>
 <div id="bar"><button onclick="setup.win('min')" title="Minimize">–</button><button id="xb" onclick="setup.win('close')" title="Close">✕</button></div>
+<div id="credit">Developed by <b>Jessie Albert Regualos</b><br>aka <em>Yotsuchi</em></div>
 <div id="dots"><b></b><b></b><b></b><b></b></div>
 <div id="pv"><div class="pw"><div class="pt"><i></i><i></i><i></i><span class="tab">New tab</span></div><div class="pa"></div><div class="pb"><div class="g">Good <em>evening</em></div><div class="ps">Search the web<u></u></div><div class="sc"><i></i><i></i><i></i><i></i></div></div></div><div class="pl">Live preview</div></div>
 <div id="logo"><svg viewBox="40 90 380 330"><defs>
@@ -63,7 +65,7 @@ body.light .k,body.light #phase{color:var(--a)}</style></head><body>
 <path d="M235 173H269C321 173 350 204 350 256 350 308 321 339 269 339H235Z" fill="var(--bg)"/><circle cx="395" cy="112" r="14" fill="#63edda"/></svg></div>
 
 <section class="scene" id="s0"><div class="k">Drift Browser · <span id="ver"></span></div><h1>Let the web <em>flow</em> past you.</h1>
-<p class="s">A fast, quiet browser. Setup takes under a minute and needs no administrator rights.</p><button class="btn" onclick="go(1)">Begin →</button></section>
+<p class="s">A fast, quiet browser by Jessie Albert Regualos (Yotsuchi). Setup takes under a minute and needs no administrator rights.</p><button class="btn" onclick="go(1)">Begin →</button></section>
 
 <section class="scene" id="s1"><div class="k">Make it yours</div>
 <div class="lbl">Accent</div><div class="sw" id="sw"></div>

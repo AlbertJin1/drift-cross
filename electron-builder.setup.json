@@ -31,14 +31,5 @@
     "artifactName": "Drift-Setup.${ext}",
     "requestExecutionLevel": "user"
   },
-  "beforePack": "scripts/before-pack.cjs",
-  "extraResources": [
-    {
-      "from": "resources/vpn",
-      "to": "vpn",
-      "filter": [
-        "**/*"
-      ]
-    }
-  ]
+  "copyright": "Copyright (c) 2026 Jessie Albert Regualos (Yotsuchi)"
 }

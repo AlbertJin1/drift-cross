@@ -1,4 +1,4 @@
-const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, nativeTheme, dialog, shell, clipboard, screen, safeStorage, net } = require('electron');
+const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, nativeTheme, dialog, shell, clipboard, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
@@ -8,8 +8,6 @@ const { createUpdater } = require('./updater');
 const { createTelemetry } = require('./telemetry');
 const { createStorage } = require('./storage');
 const { planDiscards, measurePressure } = require('./memory-manager');
-const { createVpn } = require('./vpn');
-const { createVpnGate } = require('./vpn-gate');
 
 // Project layout: src/main (this file), src/preload, src/renderer/*, build/ (icons).
 const ROOT_DIR = path.join(__dirname, '..', '..');
@@ -20,17 +18,13 @@ const PRELOAD_PATH = path.join(__dirname, '..', 'preload', 'preload.js');
 // Application Support (macOS), or XDG config directory (Linux). The actual
 // application binaries are installed separately by the per-user installer.
 app.setName('Drift');
-// SOCKS5 resolves destination hostnames at the proxy. Disable Chromium's
-// speculative DNS prefetch so page hints cannot leak hostname lookups directly
-// to the local resolver while the browser-only VPN tunnel is active.
-app.commandLine.appendSwitch('dns-prefetch-disable');
 const LEGACY_USER_DATA_DIRECTORY = app.getPath('userData');
 const APP_DATA_DIRECTORY = path.join(app.getPath('appData'), 'Drift');
 app.setPath('userData', APP_DATA_DIRECTORY);
 
 // ---------------------------------------------------------------- config
 const IS_WINDOWS = process.platform === 'win32';
-const CHROME_H_WITH_BOOKMARKS = 108; // tab strip + navigation toolbar + bookmarks bar
+const CHROME_H_WITH_BOOKMARKS = 120; // tab strip (40) + navigation toolbar (42) + bookmarks bar (38)
 const CHROME_H_WITHOUT_BOOKMARKS = 82;
 const IDLE_DISCARD_MS = 5 * 60 * 1000;
 const NEWTAB = pathToFileURL(path.join(RENDERER_DIR, 'newtab', 'newtab.html')).href;
@@ -86,28 +80,6 @@ const READER_JS = String.raw`(() => {
 const storage = createStorage({ getDir: () => app.getPath('userData') });
 const { file, readJson, writeJson, writeJsonLater } = storage;
 
-// Browser-only VPN: a proxy tunnel applied to Drift's own session (see vpn.js).
-const vpn = createVpn({
-  getSession: () => session.defaultSession,
-  net, safeStorage, readJson, writeJson,
-  onChange: () => { applyWebRtcPolicyToAll(); push(); }
-});
-// VPN Gate's OpenVPN profiles are carried by a private userspace OpenVPN +
-// gVisor network stack, exposed as a localhost SOCKS5 proxy for Drift's session.
-// No system-wide tunnel adapter or routing-table change is installed.
-const vpnGate = createVpnGate({
-  net, dialog, app, getWindow: () => win,
-  getSession: () => session.defaultSession,
-  onChange: () => { applyWebRtcPolicyToAll(); push(); },
-  log: console
-});
-// While a VPN is connected, stop WebRTC from reaching around the proxy and revealing the real address.
-function applyWebRtcPolicy(wc) {
-  try { if (wc && !wc.isDestroyed()) wc.setWebRTCIPHandlingPolicy((vpn.isActive() || vpnGate.isActive()) ? 'disable_non_proxied_udp' : 'default'); } catch { /* not supported */ }
-}
-function applyWebRtcPolicyToAll() {
-  for (const s of spaces) for (const t of s.tabs) if (t.view) applyWebRtcPolicy(t.view.webContents);
-}
 function isPathInside(parent, candidate) {
   const relative = path.relative(path.resolve(parent), path.resolve(candidate));
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
@@ -207,6 +179,7 @@ const telemetry = createTelemetry({
   app,
   fetch: monitorFetch,
   isEnabled: () => usageReports,
+  force: process.env.DRIFT_REPORT_DEV === '1', // lets `npm start` report to the monitor for testing (set DRIFT_REPORT_DEV=1)
   identity: { get: () => updater.installId(), set: (id) => updater.adoptInstallId(id) }
 });
 // Toolbar buttons the user pinned next to the address bar, in display order.
@@ -433,8 +406,6 @@ function snapshot() {
     downloads: activeInternalPage === 'downloads' ? downloads.slice().sort((a, b) => b.startedAt - a.startedAt) : [],
     extensions: activeInternalPage === 'extensions' ? extensions.list() : [],
     find: { ...findState },
-    vpn: vpn.publicState(),
-    vpnGate: vpnGate.publicState(),
     blocked: blockedCount,
     adBlockEnabled,
     currentHost: host,
@@ -529,7 +500,7 @@ function handleDownloadAction(id, action) {
 
 // ---------------------------------------------------------------- tabs
 function attachView(tab) {
-  const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: true } });
+  const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: true, spellcheck: false, enableWebSQL: false } });
   tab.view = view;
   view.setBackgroundColor('#ffffff');
   win.contentView.addChildView(view);
@@ -538,7 +509,6 @@ function attachView(tab) {
 
   const wc = view.webContents;
   bindShortcuts(wc);
-  applyWebRtcPolicy(wc);
   // Ctrl + mouse wheel / pinch zoom, which Electron reports but does not apply.
   wc.on('zoom-changed', (_event, direction) => {
     const level = wc.getZoomLevel() + (direction === 'in' ? 0.5 : -0.5);
@@ -1357,35 +1327,6 @@ ipcMain.on('settings:update', (_e, patch) => {
   push();
 });
 
-// ---- VPN (browser-only proxy tunnel)
-ipcMain.handle('vpn:save', (_e, input) => vpn.save(input && typeof input === 'object' ? input : {}));
-ipcMain.handle('vpn:delete', (_e, id) => vpn.remove(String(id || '')));
-ipcMain.handle('vpn:connect', async (_e, id, opts) => {
-  await vpnGate.disconnect(); // only one browser tunnel can own the session proxy at a time
-  return vpn.connect(String(id || ''), { password: typeof opts?.password === 'string' ? opts.password : undefined });
-});
-ipcMain.handle('vpn:disconnect', async () => {
-  await vpnGate.disconnect();
-  return vpn.disconnect();
-});
-ipcMain.handle('vpn-gate:list', async (_e, options) => {
-  try { return await vpnGate.list({ force: options?.force === true }); }
-  catch (error) { return { error: error?.message || 'Could not load VPN Gate servers.' }; }
-});
-ipcMain.handle('vpn-gate:connect', async (_e, id) => {
-  await vpn.disconnect(); // prevent two controllers from overwriting Chromium's session proxy
-  return vpnGate.connect(String(id || ''));
-});
-ipcMain.handle('vpn-gate:disconnect', () => vpnGate.disconnect());
-ipcMain.handle('vpn-gate:download', (_e, id) => vpnGate.download(String(id || '')));
-// Proxy sign-in prompts are answered silently for the connected VPN server and nothing else.
-app.on('login', (event, _webContents, _details, authInfo, callback) => {
-  const creds = vpn.credentialsFor(authInfo);
-  if (!creds) return;
-  event.preventDefault();
-  callback(creds.username, creds.password);
-});
-
 ipcMain.handle('downloads:choose-folder', async () => {
   const result = await dialog.showOpenDialog(win, { title: 'Choose download folder', defaultPath: downloadDirectory, properties: ['openDirectory', 'createDirectory'] });
   if (result.canceled || !result.filePaths?.[0]) return null;
@@ -1660,7 +1601,6 @@ async function start() {
     visitedAt: Number.isFinite(entry.visitedAt) ? entry.visitedAt : 0
   })) : [];
   const settings = readJson(SETTINGS_FILE, {});
-  vpn.load();
   adBlockEnabled = settings.adBlockEnabled !== false;
   appearance = APPEARANCES.includes(settings.appearance) ? settings.appearance : 'system';
   colorTheme = COLOR_THEME_IDS.includes(settings.colorTheme) ? settings.colorTheme : 'violet';
@@ -1776,13 +1716,17 @@ async function start() {
   win.show();
   // Focus requested before the window was visible can be dropped, so ask again once it is shown.
   if (cur.active && isNewTabUrl(cur.active.url)) setTimeout(() => { if (win && !win.isDestroyed() && !paletteOpen) focusNewTab(cur.active); }, 200);
-  const discardTimer = setInterval(discardIdleTabs, 30 * 1000);
+  const discardTimer = setInterval(discardIdleTabs, 15 * 1000);
   discardTimer.unref?.();
   updater.start(); // background check shortly after startup; installs when Drift closes
   telemetry.start(); // "open" a few seconds after launch, then a heartbeat every minute
 }
 
 if (process.platform === 'win32') app.setAppUserModelId('org.drift.browser');
+// Lower baseline memory: switch off Chromium background services a browser this size does not use (translation
+// prompts, Cast discovery, optimization-hint downloads, autofill server calls). Must run before the app is ready.
+app.commandLine.appendSwitch('disable-features', 'Translate,MediaRouter,OptimizationHints,AutofillServerCommunication');
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
@@ -1793,8 +1737,6 @@ if (!app.requestSingleInstanceLock()) {
   });
   let closeReported = false;
   app.on('before-quit', (event) => {
-    vpn.shutdown();
-    vpnGate.shutdown();
     persistSettings(); // final flush so no preference change can be lost
     if (win && !win.isDestroyed()) saveSessionNow();
     storage.flushAll(); // history, downloads and anything else still waiting on a debounce timer

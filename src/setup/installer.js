@@ -1,5 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
-const path = require('path'), fs = require('fs'), os = require('os');
+// original-fs: Electron's normal fs treats "app.asar" as a folder (so copying it fails with EISDIR). The Setup copies
+// its own payload, which must be read as plain files, app.asar included.
+const path = require('path'), fs = require('original-fs'), os = require('os');
 const { spawn, execFile } = require('child_process');
 
 const KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Drift';
@@ -61,7 +63,7 @@ ipcMain.handle('install', async (_e, o) => {
     if (o.desktop) link(app.getPath('desktop'));
     if (o.startMenu) link(startMenu());
     await reg('DisplayName', 'REG_SZ', 'Drift Browser'); await reg('DisplayVersion', 'REG_SZ', app.getVersion());
-    await reg('Publisher', 'REG_SZ', 'Drift contributors'); await reg('InstallLocation', 'REG_SZ', o.dir);
+    await reg('Publisher', 'REG_SZ', 'Jessie Albert Regualos (Yotsuchi)'); await reg('InstallLocation', 'REG_SZ', o.dir);
     await reg('DisplayIcon', 'REG_SZ', exe); await reg('NoModify', 'REG_DWORD', 1); await reg('NoRepair', 'REG_DWORD', 1);
     await reg('UninstallString', 'REG_SZ', `"${exe}" --uninstall`); // installed Drift.exe doubles as the uninstaller
     send(95, 'Making it yours');
@@ -83,7 +85,11 @@ ipcMain.handle('uninstall', async (_e, o) => {
     if (o.wipe) fs.rmSync(path.join(process.env.APPDATA, 'Drift'), { recursive: true, force: true });
     const bat = path.join(os.tmpdir(), 'drift-cleanup.bat'); // retries until this process has exited and the folder is free
     fs.writeFileSync(bat, `@echo off\r\nfor /l %%i in (1,1,90) do (\r\n  rmdir /s /q "${dir}" 2>nul\r\n  if not exist "${dir}" goto done\r\n  ping -n 2 127.0.0.1 >nul\r\n)\r\n:done\r\ndel "%~f0"\r\n`);
-    spawn('cmd.exe', ['/c', bat], { detached: true, stdio: 'ignore', windowsHide: true, cwd: os.tmpdir() }).unref();
+    // conhost --headless gives the helper (and its ping delays) a console that is never shown. A plain detached
+    // cmd.exe opens a visible console, which Windows Terminal turns into a flashing "ping" window.
+    const helper = spawn('conhost.exe', ['--headless', 'cmd.exe', '/c', bat], { detached: true, stdio: 'ignore', windowsHide: true, cwd: os.tmpdir() });
+    helper.on('error', () => spawn('cmd.exe', ['/c', bat], { detached: true, stdio: 'ignore', windowsHide: true, cwd: os.tmpdir() }).unref());
+    helper.unref();
     return { ok: true };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });

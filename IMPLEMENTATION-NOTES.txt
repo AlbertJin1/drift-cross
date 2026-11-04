@@ -80,3 +80,56 @@ Verification in this environment
   produce a Windows installer, or verify a live VPN Gate relay. The updated ZIP
   therefore contains the corrected Drift source and reproducible Windows helper
   build pipeline, not a precompiled/verified Windows VPN-enabled installer.
+
+
+DRIFT 1.3.3 - MONITOR GATEWAY / UPDATER HARDENING
+-------------------------------------------------
+- New src/main/monitor-gateway.js (modelled on PDF Studio's monitor-api + fetchHttpsResponse): HTTPS only, manual
+  redirects (max 5), automatic /api <-> /public/api route fallback, optional fallback gateway hosts, rejection of
+  tunnel splash HTML answered with HTTP 200, last-working address remembered, results classified ok/retry/permanent.
+- Updater and usage reporting both go through it. Primary gateway is now the PDF Studio monitor host; the old tunnel
+  address is kept as a fallback (update-config.js). DRIFT_UPDATE_GATEWAY overrides both for testing.
+- Update checks now send the PC name and LAN address, so the monitor folds this PC into one install row.
+- Update check: first check 20 s after launch, backoff retries (2, 4, 8 ... min) after failures, re-check after wake
+  from sleep; "newer" is decided by the monitor flag OR Drift's own version comparison.
+- Telemetry: undelivered open/close/heartbeat reports are queued in Updates\telemetry-queue.json (max 50, 7 days)
+  and re-sent as soon as the monitor answers; permanent rejections are dropped.
+- Tests: npm run test:gateway (new), test:updater, test:telemetry all pass. Not verifiable here: Windows installer
+  build and a live monitor (no PHP/Windows in this sandbox).
+- To ship: build Drift-Setup.exe 1.3.3, upload it in the monitor's Drift tab > Releases. Installed 1.3.2 copies
+  download it silently, install it when Drift closes, and report the new version on their next heartbeat.
+
+BUILD SYSTEM FIX (1.3.3)
+------------------------
+- Cause of the "window closes" problem: scripts\*.bat were saved with LF-only line endings. cmd.exe mis-reads labels
+  and GOTO in such files and aborts mid-script, so the window vanished before any message. All .bat files are now CRLF
+  and .gitattributes keeps them that way.
+- build_publish.bat now only starts scripts\build-installer.cjs (Node) and ALWAYS pauses at the end. The Node script
+  runs the 8 steps, writes build-logs\build-latest.log, explains common failures (locked files, symlink privilege,
+  network, disk space) and never touches publish\ unless the new build succeeded.
+- The VPN helper is reused when already built. Without Go on PATH the installer is built WITHOUT the VPN engine (clear
+  warning) instead of failing; use --require-vpn to make that an error.
+- npm ci falls back to npm install when the lockfile is out of sync; unchanged dependencies are not reinstalled.
+- build_setup.bat builds the custom Setup launcher (dist-setup\Drift-Setup.exe). Options: --skip-tests, --skip-install,
+  --rebuild-vpn, --require-vpn, --no-publish, --dry-run.
+
+
+DRIFT 1.3.4/1.3.5 - ALL-IN-ONE SETUP, UPDATES BACK ON THE MONITOR
+-----------------------------------------------------------
+- One Windows build: build_publish.bat -> scripts\build-installer.cjs -> electron-builder.setup.json (portable) ->
+  dist-setup\Drift-Setup.exe, copied to publish\ with SHA256SUMS.txt and RELEASE-MANIFEST.json. That single file is the
+  custom Setup window (src/setup) AND the app (the extracted payload is what gets copied). Nothing is downloaded.
+- Removed: installer\ (the GitHub-downloading installer), release_github.bat, build_setup.bat, SETUP-README.txt, the
+  NSIS script/artwork and package.json build.nsis. --setup is still accepted by build-installer.cjs and does nothing.
+- Updates no longer use GitHub. src/main/updater.js asks the monitor's client gateway (resource=update, action=latest,
+  app_id=drift, version, platform=windows, install_id, hostname, local_ip) through src/main/monitor-gateway.js, then
+  downloads action=download&version=<v>, verifies size + SHA-256 (announced by the monitor) + "MZ", and stages it as before
+  (apply when Drift closes / next launch; helper runs "Drift-Setup.exe /S --updated --silent-update --update-dir=...").
+  "Newer" = the monitor's update_available flag OR Drift's own comparison, never a downgrade.
+- update-config.js has no github block any more; check-project.cjs fails the build if one comes back.
+- Release: bump version, run build_publish.bat, upload publish\Drift-Setup.exe in the monitor's Drift tab > Releases.
+- TRANSITION: copies built from the GitHub-aware source (1.3.3 with GitHub updates) only look at GitHub. They need one
+  manual install of 1.3.4 (run the new Drift-Setup.exe over them) or one last GitHub release of it. Copies from the
+  monitor-based 1.3.2 / earlier 1.3.3 updated through the monitor and will pick 1.3.4 up by themselves.
+- Not verifiable in the Linux sandbox: the Windows build itself and a live monitor. Tests: npm test (updater, gateway,
+  telemetry, memory, storage) and npm run check.

@@ -3,12 +3,14 @@
 /*
  * Drift silent updater (Windows).
  *
- *   1. A few seconds after launch (and every few hours) Drift asks the Universal App Monitor's public client
- *      gateway whether a newer release exists (app id "drift").
- *   2. A newer installer is downloaded quietly in the background, checked against the SHA-256 and size the
- *      monitor announced, and parked in <profile>\Updates. Nothing is shown to the user.
- *   3. When Drift closes, a tiny hidden helper waits for the browser process to exit and then runs the
- *      installer silently over the existing installation. The next launch is the new version.
+ *   1. A few seconds after launch (and every few hours) Drift asks the Universal App Monitor (through its public
+ *      client gateway, resource=update, app id "drift") for the newest release published in the monitor's
+ *      Drift tab > Releases. The monitor also records this PC (install id, PC name, LAN address) from that request.
+ *   2. A newer Drift-Setup.exe (the all-in-one installer: custom Setup window + the app itself) is downloaded
+ *      quietly from the monitor, checked against the size and SHA-256 the monitor announces, and parked in
+ *      <profile>\Updates. Nothing is shown to the user.
+ *   3. When Drift closes, a tiny hidden helper waits for the browser process to exit and then runs that installer
+ *      headless (--silent-update) over the existing installation. The next launch is the new version.
  *   4. If that did not happen (crash, shutdown, antivirus...), the staged installer is applied at the next
  *      launch, before a window opens, and Drift starts again by itself.
  *
@@ -24,6 +26,8 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
+const { createGateway } = require('./monitor-gateway');
+const { lanAddress } = require('./telemetry');
 
 const VERSION_RE = /^v?(\d{1,5})\.(\d{1,5})\.(\d{1,5})$/;
 const SHA256_RE = /^[a-f0-9]{64}$/;
@@ -134,6 +138,7 @@ function createUpdater(deps) {
   const execPath = deps.execPath || process.execPath;
   const spawnImpl = deps.spawn || spawn;
   const fetchImpl = deps.fetch;
+  const osImpl = deps.os || os;
   const isEnabled = deps.isEnabled || (() => true);
   const now = deps.now || Date.now;
   const waitMs = deps.applyWaitMs || APPLY_WAIT_MS;
@@ -148,6 +153,7 @@ function createUpdater(deps) {
   };
 
   let busy = false;
+  let failures = 0;
   let started = false;
   let timer = null;
   let appliedThisRun = false;
@@ -232,36 +238,41 @@ function createUpdater(deps) {
     }
   }
 
-  // ---------------------------------------------------------------- network
-  function endpoint(params) {
-    const url = new URL(config.gatewayUrl);
-    if (url.protocol !== 'https:' && !config.allowInsecure) throw new Error('The update gateway must use HTTPS.');
-    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
-    return url.toString();
-  }
-  const headers = (accept) => ({
-    accept,
-    'ngrok-skip-browser-warning': '1',
-    'user-agent': `Drift/${app.getVersion()} (updater)`
-  });
+  // ---------------------------------------------------------------- network (Universal App Monitor)
+  const gateway = deps.gateway || createGateway({ config, fetch: fetchImpl, userAgent: 'Drift', version: () => app.getVersion() });
+  const clip = (value, max) => String(value == null ? '' : value).replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, max);
 
-  async function fetchLatest(current, installId) {
-    const url = endpoint({
-      resource: 'update', action: 'latest', app_id: config.appId, app: config.appId, version: current, install_id: installId
+  // Returns { version, tag, sha256, size, notes }, or null when there is nothing newer / nothing downloadable yet.
+  // The monitor decides which release suits this client (staged rollouts); "newer" is its flag OR our own comparison.
+  async function fetchLatest(current, state) {
+    const result = await gateway.request({
+      params: {
+        resource: 'update',
+        action: 'latest',
+        app_id: config.appId,
+        version: current,
+        platform: 'windows',
+        install_id: state.installId,
+        hostname: clip(osImpl.hostname(), 64),
+        local_ip: lanAddress(() => osImpl.networkInterfaces())
+      },
+      timeoutMs: config.requestTimeoutMs || 25000
     });
-    const response = await fetchImpl(url, { headers: headers('application/json'), signal: AbortSignal.timeout(config.requestTimeoutMs) });
-    if (!response.ok) throw new Error(`the update check returned HTTP ${response.status}`);
-    const body = await response.json();
-    if (!body || body.ok !== true) throw new Error('the update service sent an unexpected answer');
-    if (body.update_available !== true) return null;
-    const latest = body.latest || {};
-    const version = String(latest.version || body.latest_version || '').replace(/^v/i, '');
-    const sha256 = String(latest.sha256 || body.sha256 || '').toLowerCase();
-    const size = Number(latest.size || body.size);
-    if (!parseVersion(version)) throw new Error(`the announced version "${version}" is not valid`);
-    if (!SHA256_RE.test(sha256)) throw new Error('the announced checksum is not valid');
-    if (!Number.isFinite(size) || size < config.minInstallerBytes || size > config.maxInstallerBytes) throw new Error('the announced size is not plausible');
-    return { version, sha256, size, notes: String(latest.notes || body.notes || '').slice(0, 2000) };
+    if (result.kind !== 'ok') throw new Error(`the update check failed: ${result.message || 'the monitor did not answer'}`);
+    let answer;
+    try { answer = await result.response.json(); } catch { throw new Error('the monitor sent an unreadable answer'); }
+    if (!answer || answer.ok === false) throw new Error(`the monitor refused the update check${answer && answer.error ? `: ${clip(answer.error, 120)}` : ''}`);
+    const latest = answer.latest && typeof answer.latest === 'object' ? answer.latest : null;
+    if (!latest) return null; // no release published yet, or none this client may receive
+    const version = String(latest.version || answer.latest_version || '').replace(/^v/i, '');
+    if (!parseVersion(version)) throw new Error(`the monitor announced "${clip(version, 40)}", which is not a plain version number`);
+    const size = Number(latest.size);
+    if (!Number.isFinite(size) || size < config.minInstallerBytes || size > config.maxInstallerBytes) throw new Error('the announced installer has an implausible size');
+    const sha256 = String(latest.sha256 || '').toLowerCase();
+    if (!SHA256_RE.test(sha256)) throw new Error('the monitor announced no SHA-256 checksum for the installer');
+    const cmp = compareVersions(version, current);
+    if (cmp === -1 || !(answer.update_available === true || cmp === 1)) return null; // never a downgrade
+    return { version, tag: `v${version}`, sha256, size, notes: clip(latest.notes || answer.notes, 2000) };
   }
 
   async function download(info) {
@@ -288,12 +299,13 @@ function createUpdater(deps) {
     });
     try {
       arm();
-      const url = endpoint({ resource: 'update', action: 'download', app_id: config.appId, app: config.appId, version: info.version });
-      const response = await fetchImpl(url, { headers: headers('application/octet-stream'), signal: controller.signal });
-      if (!response.ok || !response.body) throw new Error(`the download returned HTTP ${response.status}`);
-      const announced = (response.headers.get('x-content-sha256') || '').toLowerCase();
-      if (announced && announced !== info.sha256) throw new Error('the download does not match the announced release');
-      await pipeline(Readable.fromWeb(response.body), meter, fs.createWriteStream(part), { signal: controller.signal });
+      const result = await gateway.request({
+        params: { resource: 'update', action: 'download', app_id: config.appId, version: info.version },
+        accept: 'application/octet-stream',
+        signal: controller.signal
+      });
+      if (result.kind !== 'ok' || !result.response.body) throw new Error(`the download failed: ${result.message || 'the monitor sent no data'}`);
+      await pipeline(Readable.fromWeb(result.response.body), meter, fs.createWriteStream(part), { signal: controller.signal });
     } catch (error) {
       fs.rmSync(part, { force: true });
       throw error;
@@ -327,7 +339,7 @@ function createUpdater(deps) {
       housekeeping();
       const current = app.getVersion();
       const state = loadState();
-      const info = await fetchLatest(current, state.installId);
+      const info = await fetchLatest(current, state);
       state.lastCheckAt = now();
       saveState(state);
       if (!info || compareVersions(info.version, current) <= 0) return 'up-to-date';
@@ -377,11 +389,24 @@ function createUpdater(deps) {
         pid: process.pid, installer, installDir, exe: execPath, lock: P.lock, pending: P.pending, log: P.log, relaunch
       }));
       writeJson(P.lock, { startedAt: now(), version: pending.version, pid: process.pid });
-      const child = spawnImpl('cmd.exe', ['/d', '/s', '/c', `""${P.cmd}""`], {
+      // conhost --headless: the helper's console is never shown (a plain detached cmd.exe flashes a window, which
+      // Windows Terminal turns into a visible "ping" tab).
+      const child = spawnImpl('conhost.exe', ['--headless', 'cmd.exe', '/d', '/s', '/c', `""${P.cmd}""`], {
         cwd: os.tmpdir(), // never inside the install folder: a handle on it would block the file swap
         detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true
       });
-      if (child && child.on) child.on('error', (error) => { log(`could not start the update helper: ${error.message}`); fs.rmSync(P.lock, { force: true }); });
+      const spawnOptions = { cwd: os.tmpdir(), detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true };
+      if (child && child.on) {
+        child.on('error', (error) => {
+          // No conhost.exe (very old Windows): fall back to a plain hidden cmd.exe.
+          log(`headless helper unavailable (${error.message}); using cmd.exe`);
+          try {
+            const plain = spawnImpl('cmd.exe', ['/d', '/s', '/c', `""${P.cmd}""`], spawnOptions);
+            if (plain && plain.on) plain.on('error', (e) => { log(`could not start the update helper: ${e.message}`); fs.rmSync(P.lock, { force: true }); });
+            if (plain && plain.unref) plain.unref();
+          } catch (e) { log(`could not start the update helper: ${e.message}`); fs.rmSync(P.lock, { force: true }); }
+        });
+      }
       if (child && child.unref) child.unref();
       appliedThisRun = true;
       log(`installing ${pending.version} (attempt ${pending.attempts + 1})${relaunch ? ' at startup' : ' after Drift closed'}`);
@@ -420,8 +445,11 @@ function createUpdater(deps) {
   function schedule(delay) {
     clearTimeout(timer);
     timer = setTimeout(async () => {
-      await checkAndStage();
-      schedule(config.checkIntervalMs + Math.floor(Math.random() * 10 * 60 * 1000));
+      const outcome = await checkAndStage();
+      // A failed check (offline, tunnel down) is retried soon instead of waiting the whole interval.
+      if (outcome === 'error') failures += 1; else failures = 0;
+      const retry = Math.min((config.retryBaseMs || 2 * 60 * 1000) * 2 ** Math.max(0, failures - 1), config.checkIntervalMs);
+      schedule(outcome === 'error' ? retry : config.checkIntervalMs + Math.floor(Math.random() * 10 * 60 * 1000));
     }, delay);
     if (timer.unref) timer.unref();
   }
@@ -433,6 +461,11 @@ function createUpdater(deps) {
       try { applyPending({ relaunch: false }); } catch (error) { log(`apply on close failed: ${error.message}`); }
     });
     schedule(config.firstCheckDelayMs);
+    // Like Chrome: look again after the PC wakes from sleep or the network returns, not only on the timer.
+    try {
+      const { powerMonitor } = require('electron');
+      if (powerMonitor && powerMonitor.on) powerMonitor.on('resume', () => { if (isEnabled()) schedule(15 * 1000); });
+    } catch { /* not running inside Electron (tests) */ }
   }
 
   // Called when the user flips the Settings switch.

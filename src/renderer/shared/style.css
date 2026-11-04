@@ -298,7 +298,7 @@ html.pal, html.pal body { background: transparent; }
 /* -------------------------------------------------------------------------
    Drift 1.2 browser chrome and full-page browser managers
    ------------------------------------------------------------------------- */
-:root { --chrome-height: 108px; }
+:root { --chrome-height: 120px; }
 #chrome { height: var(--chrome-height); z-index: 4; overflow: hidden; background: var(--chrome); }
 #chrome, #tabbar, #toolbar, #bookmarksbar, .page-sidebar, .page-card, .omni { transition: background-color .2s ease, border-color .2s ease, color .2s ease; }
 #windowbar { display: none !important; }
@@ -1292,37 +1292,43 @@ body.tab-dragging, body.tab-dragging * { user-select: none !important; cursor: g
 @keyframes tab-card-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .tab-card { animation: none; } }
 
-/* ---- VPN -------------------------------------------------------------------- */
-.vpn-chip { height: 31px; padding: 0 10px; align-items: center; gap: 7px; max-width: 150px; border-radius: 10px; color: var(--success); font-size: 11.5px; font-weight: 700;
-  background: color-mix(in srgb, var(--success) 13%, var(--surface)); border: 1px solid color-mix(in srgb, var(--success) 28%, var(--border)); cursor: pointer; }
-.vpn-chip:not(.hidden) { display: inline-flex; }
-.vpn-chip:hover { background: color-mix(in srgb, var(--success) 22%, var(--surface)); }
-.vpn-chip svg { width: 15px; height: 15px; flex: none; }
-.vpn-chip span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.vpn-chip.connecting { color: var(--warning); background: color-mix(in srgb, var(--warning) 13%, var(--surface)); border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
 
-.vpn-status { display: flex; align-items: center; gap: 12px; padding: 14px 2px; }
-.vpn-status > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.vpn-status small { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
-.vpn-dot { width: 10px; height: 10px; flex: none; border-radius: 50%; background: var(--muted-2); box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted-2) 18%, transparent); }
-.vpn-connected .vpn-dot { background: var(--success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 22%, transparent); }
-.vpn-connecting .vpn-dot { background: var(--warning); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 22%, transparent); animation: vpn-pulse 1s ease-in-out infinite alternate; }
-.vpn-error .vpn-dot { background: var(--danger); box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 20%, transparent); }
-@keyframes vpn-pulse { from { opacity: .45; } to { opacity: 1; } }
-.vpn-row .extension-mark svg { width: 18px; height: 18px; }
-.vpn-row.is-active { background: color-mix(in srgb, var(--success) 6%, transparent); }
-.vpn-tag { color: var(--success); font-weight: 700; }
-.vpn-note { margin: 10px 0 !important; }
-.vpn-list .empty-state { min-height: 150px; }
+/* ---------------------------------------------------------------------------------------------
+   Windows caption buttons: flush with the top and right edges of the window, like a native title bar
+   (no padding around them, full tab-strip height, square hover blocks, red close).
+   --------------------------------------------------------------------------------------------- */
+body.is-windows #tabbar { padding-right: 0 !important; }
+body.is-windows .window-actions { align-self: stretch; height: auto; margin-left: 6px; gap: 0; }
+body.is-windows .window-action { width: 46px; height: 100%; min-height: 100%; border-radius: 0; color: var(--muted); }
+body.is-windows .window-action:hover { color: var(--text); background: var(--surface-hover); }
+body.is-windows .window-action:active { transform: none; background: color-mix(in srgb, var(--surface-hover) 70%, var(--text) 8%); }
+body.is-windows .window-action.close-window:hover,
+body.is-windows .window-action.close-window:active { color: #fff; background: #e81123; }
+body.is-windows .window-action.close-window:active { background: #c50f1f; }
+:root[data-w="xs"] body.is-windows .window-action, :root[data-w="sm"] body.is-windows .window-action { width: 40px; }
 
-.vpn-form { gap: 12px; }
-.vpn-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.vpn-row2 .vpn-port { max-width: 120px; }
-.vpn-row2:has(.vpn-port) { grid-template-columns: 1fr 110px; }
-.vpn-select { width: 100%; height: 40px; font-size: 12px; border-radius: 10px; }
-.vpn-check { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--text); cursor: pointer; }
-.vpn-check input { width: 15px; height: 15px; accent-color: var(--accent); }
-#vpn-creds.is-disabled { opacity: .45; pointer-events: none; }
-.vpn-form .ext-hint { margin: 0; line-height: 1.5; }
-@media (max-width: 520px) { .vpn-row2, .vpn-row2:has(.vpn-port) { grid-template-columns: 1fr; } .vpn-row2 .vpn-port { max-width: none; } }
-@media (prefers-reduced-motion: reduce) { .vpn-connecting .vpn-dot { animation: none; } }
+/* ---------------------------------------------------------------------------------------------
+   Bookmarks bar: taller, larger favicons and labels, softer chips, accent-edged "All bookmarks" pill.
+   --------------------------------------------------------------------------------------------- */
+#bookmarksbar { height: 38px; min-height: 38px; padding: 0 12px; gap: 10px; background: linear-gradient(180deg, color-mix(in srgb, var(--chrome) 92%, var(--surface)) 0%, var(--chrome) 100%); border-bottom: 1px solid var(--border); }
+.bookmark-items { gap: 4px; align-items: center; }
+.bookmark-link { height: 28px; max-width: 200px; padding: 0 11px 0 6px; gap: 8px; border: 1px solid transparent; border-radius: 9px; font-size: 12px; font-weight: 600; color: color-mix(in srgb, var(--text) 80%, var(--muted)); }
+.bookmark-link:hover { color: var(--text); background: var(--surface-hover); border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); }
+.bookmark-mark { width: 20px; height: 20px; border-radius: 6px; font-size: 11px; font-weight: 800; color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-strong)); box-shadow: 0 2px 6px -2px color-mix(in srgb, var(--accent) 70%, transparent); }
+.bookmark-label { font-size: 12px; letter-spacing: .005em; }
+.bookmark-empty { font-size: 12px; padding-left: 6px; color: var(--muted); }
+.bookmarks-more { height: 28px; min-width: 30px; border-radius: 9px; font-size: 16px; }
+.bookmarks-manage { height: 28px; padding: 0 15px; border-radius: 999px; font-size: 11.5px; font-weight: 700; border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border)); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--text); }
+.bookmarks-manage:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 20%, var(--surface)); }
+:root[data-w="xs"] #bookmarksbar, :root[data-w="sm"] #bookmarksbar { padding: 0 8px; }
+:root[data-w="xs"] .bookmark-link { max-width: 120px; }
+
+/* Developer credit (About page + settings sidebar) */
+.developer-card { display: flex; align-items: center; gap: 14px; }
+.developer-card > div:last-child { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.developer-card strong { font-size: 14px; }
+.developer-card small { color: var(--muted); font-size: 11px; }
+.developer-card small b { color: var(--accent); font-weight: 750; }
+.developer-card .dev-label { text-transform: uppercase; letter-spacing: .14em; font-size: 9.5px; font-weight: 700; color: var(--cyan); }
+.dev-avatar { width: 42px; height: 42px; flex: none; display: grid; place-items: center; border-radius: 13px; font-size: 19px; font-weight: 800; color: #fff; background: linear-gradient(135deg, var(--accent), var(--cyan)); box-shadow: 0 6px 16px -6px color-mix(in srgb, var(--accent) 70%, transparent); }
+.sidebar-bottom .dev-credit { color: var(--muted-2); font-size: 10px; letter-spacing: .01em; }

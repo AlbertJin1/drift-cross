@@ -241,7 +241,17 @@ function createVpn({ getSession, net: electronNet, safeStorage, readJson, writeJ
   let authFailed = false;
   let busy = Promise.resolve();
 
-  const canEncrypt = () => { try { return !!safeStorage?.isEncryptionAvailable?.(); } catch { return false; } };
+  // Electron deprecated the synchronous isEncryptionAvailable(): use the async check when it exists and cache the
+  // answer (it resolves within milliseconds of startup); older Electron builds and test fakes keep the sync check.
+  let encryptionAvailable = false;
+  try {
+    if (typeof safeStorage?.isAsyncEncryptionAvailable === 'function') {
+      Promise.resolve(safeStorage.isAsyncEncryptionAvailable()).then((ok) => { encryptionAvailable = !!ok; }).catch(() => {});
+    } else {
+      encryptionAvailable = !!safeStorage?.isEncryptionAvailable?.();
+    }
+  } catch { encryptionAvailable = false; }
+  const canEncrypt = () => encryptionAvailable;
   const encrypt = (text) => (text ? safeStorage.encryptString(text).toString('base64') : '');
   const decrypt = (blob) => { try { return blob ? safeStorage.decryptString(Buffer.from(blob, 'base64')) : ''; } catch { return ''; } };
 

@@ -16,11 +16,11 @@ const MIN = 60 * 1000;
 const tab = (id, idleMs, extra = {}) => ({ id, lastActive: NOW - idleMs, visible: false, audible: false, busy: false, isNewTab: false, memoryKB: 0, ...extra });
 const plan = (tabs, pressure = 0, config) => planDiscards(tabs, { now: NOW, pressure, config }).sort((a, b) => a - b);
 
-test('a tab idle for under five minutes is kept', () => {
-  assert.deepEqual(plan([tab(1, 4 * MIN)]), []);
+test('a tab idle for under three minutes is kept', () => {
+  assert.deepEqual(plan([tab(1, 2 * MIN)]), []);
 });
-test('a tab idle for over five minutes is discarded', () => {
-  assert.deepEqual(plan([tab(1, 6 * MIN)]), [1]);
+test('a tab idle for over three minutes is discarded', () => {
+  assert.deepEqual(plan([tab(1, 4 * MIN)]), [1]);
 });
 test('the visible tab is never discarded, however old', () => {
   assert.deepEqual(plan([tab(1, 60 * MIN, { visible: true })], 2), []);
@@ -29,13 +29,13 @@ test('audible, captured and downloading tabs are never discarded', () => {
   const tabs = [tab(1, 60 * MIN, { audible: true }), tab(2, 60 * MIN, { busy: true }), tab(3, 60 * MIN)];
   assert.deepEqual(plan(tabs, 2), [3]);
 });
-test('an idle New Tab page goes after 45 seconds', () => {
+test('an idle New Tab page goes after 20 seconds', () => {
   assert.deepEqual(plan([tab(1, 50 * 1000, { isNewTab: true }), tab(2, 50 * 1000)]), [1]);
 });
-test('moderate pressure shortens the idle limit to two minutes', () => {
-  assert.deepEqual(plan([tab(1, 3 * MIN), tab(2, 90 * 1000)], 1), [1]);
+test('moderate pressure shortens the idle limit to 75 seconds', () => {
+  assert.deepEqual(plan([tab(1, 3 * MIN), tab(2, 60 * 1000)], 1), [1]);
 });
-test('high pressure shortens the idle limit to one minute', () => {
+test('high pressure shortens the idle limit to 40 seconds', () => {
   assert.deepEqual(plan([tab(1, 90 * 1000), tab(2, 30 * 1000)], 2).includes(1), true);
 });
 test('the live-tab cap drops the least recently used tabs first', () => {
@@ -48,7 +48,7 @@ test('the live-tab cap drops the least recently used tabs first', () => {
   assert.ok(background - dropped.length <= DEFAULTS.maxBackgroundLive, 'no more than the cap remain loaded');
   assert.ok(!dropped.includes(1), 'the most recently used tab survives');
 });
-test('the cap never drops a tab used within the last minute', () => {
+test('the cap never drops a tab used within the last 45 seconds', () => {
   const tabs = [];
   for (let i = 1; i <= 12; i++) tabs.push(tab(i, 10 * 1000 + i)); // all recently used
   assert.deepEqual(plan(tabs), []);
@@ -60,9 +60,9 @@ test('protected tabs still count toward the cap but are not released by it', () 
   assert.ok(dropped.every((id) => id > 3), 'audible tabs are untouched');
   assert.equal(dropped.length, 8 - DEFAULTS.maxBackgroundLive);
 });
-test('high pressure also releases the heaviest idle tabs early, two at most', () => {
+test('high pressure also releases the heaviest idle tabs early, three at most', () => {
   const tabs = [tab(1, 25 * 1000, { memoryKB: 900_000 }), tab(2, 25 * 1000, { memoryKB: 100_000 }), tab(3, 25 * 1000, { memoryKB: 600_000 }), tab(4, 25 * 1000, { memoryKB: 300_000 })];
-  assert.deepEqual(plan(tabs, 2), [1, 3]);
+  assert.deepEqual(plan(tabs, 2), [1, 3, 4]);
   assert.deepEqual(plan(tabs, 1), []);
 });
 test('an empty or all-visible list plans nothing', () => {
@@ -77,7 +77,7 @@ test('pressure is 0 on a roomy machine with a small footprint', () => {
   assert.equal(r.level, 0);
   assert.equal(r.byPid.get(100), 300_000);
 });
-test('Windows free memory under 20% / 10% raises pressure to 1 / 2', () => {
+test('Windows free memory under 25% / 12% raises pressure to 1 / 2', () => {
   const at = (free) => measurePressure({ getSystemMemoryInfo: () => ({ total: 8 * GB, free }), getAppMetrics: metrics([200_000]), isWindows: true }).level;
   assert.equal(at(1.4 * GB), 1);
   assert.equal(at(0.5 * GB), 2);
@@ -86,11 +86,11 @@ test('low "free" memory is ignored on macOS/Linux (it excludes the file cache)',
   const r = measurePressure({ getSystemMemoryInfo: () => ({ total: 8 * GB, free: 0.2 * GB }), getAppMetrics: metrics([200_000]), isWindows: false });
   assert.equal(r.level, 0);
 });
-test("Drift's own footprint is measured against 35% of RAM (min 1.5 GB)", () => {
+test("Drift's own footprint is measured against 30% of RAM (min 1.25 GB)", () => {
   const level = (total, usedKB) => measurePressure({ getSystemMemoryInfo: () => ({ total, free: total }), getAppMetrics: metrics([usedKB]), isWindows: false }).level;
-  assert.equal(level(4 * GB, 1.2 * GB), 1); // 4 GB machine: budget is the 1.5 GB floor, 70% = 1.05 GB
+  assert.equal(level(4 * GB, 1.2 * GB), 1); // 4 GB machine: budget is the 1.25 GB floor, 70% = 0.875 GB
   assert.equal(level(4 * GB, 1.6 * GB), 2);
-  assert.equal(level(16 * GB, 3 * GB), 0);  // 16 GB machine: budget 5.6 GB
+  assert.equal(level(16 * GB, 3 * GB), 0);  // 16 GB machine: budget 4.8 GB
   assert.equal(level(16 * GB, 6 * GB), 2);
 });
 test('privateBytes is preferred over workingSetSize when present', () => {
