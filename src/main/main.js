@@ -1,4 +1,4 @@
-const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, nativeTheme, dialog, shell, clipboard, screen } = require('electron');
+const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, nativeTheme, dialog, shell, clipboard, screen, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
@@ -6,8 +6,11 @@ const { createExtensionManager } = require('./extensions');
 const { matchShortcut } = require('./shortcuts');
 const { createUpdater } = require('./updater');
 const { createTelemetry } = require('./telemetry');
+const { createReviewService } = require('./reviews');
+const { createReviewPrompt } = require('./review-prompt');
 const { createStorage } = require('./storage');
-const { planDiscards, measurePressure } = require('./memory-manager');
+const { planDiscards, measurePressure, normalizeTabOptimizationSettings, discardConfigFromSettings } = require('./memory-manager');
+const { normalizeAppearanceOptions } = require('./appearance-settings');
 
 // Project layout: src/main (this file), src/preload, src/renderer/*, build/ (icons).
 const ROOT_DIR = path.join(__dirname, '..', '..');
@@ -136,6 +139,11 @@ ipcMain.on('extension:confirm-response', (_event, requestId, allowed) => {
 
 // ---------------------------------------------------------------- state
 let win, ui, palette;
+// Set as soon as Drift starts quitting. From then on windows and tab views are being torn down, so every timer
+// and callback that touches them must stand down (touching a destroyed Electron object throws).
+let quitting = false;
+const wcAlive = (wc) => !!wc && !wc.isDestroyed();
+const winAlive = () => !!win && !win.isDestroyed();
 let nextId = 1;
 let lastWindowTitle = '';
 let paletteOpen = false;
@@ -148,6 +156,7 @@ let adBlockEnabled = true;
 let allowlistedSites = [];
 let appearance = 'system';
 let colorTheme = 'violet';
+let appearanceOptions = normalizeAppearanceOptions();
 let searchEngine = 'duckduckgo';
 // Startup + new-tab preferences.
 //   startupMode: newtab (fresh New Tab page, the default) | previous (continue where you left off)
@@ -166,6 +175,7 @@ let usageReports = true; // tell the developer's monitor that Drift is open (ver
 let showBookmarksBar = true;
 let downloadDirectory = app.getPath('downloads');
 let askWhereToSave = false;
+let tabOptimizations = normalizeTabOptimizationSettings();
 // Silent updater. Uses its own in-memory session, so the ad blocker, cookies and extensions never see its requests.
 let updaterSession = null;
 const monitorFetch = (url, init) => (updaterSession ||= session.fromPartition('drift-updater')).fetch(url, init);
@@ -181,6 +191,19 @@ const telemetry = createTelemetry({
   isEnabled: () => usageReports,
   force: process.env.DRIFT_REPORT_DEV === '1', // lets `npm start` report to the monitor for testing (set DRIFT_REPORT_DEV=1)
   identity: { get: () => updater.installId(), set: (id) => updater.adoptInstallId(id) }
+});
+// Reviews share the anonymous install identity and server-side gateway used by the updater/telemetry.
+const reviewService = createReviewService({
+  app,
+  fetch: monitorFetch,
+  identity: { get: () => updater.installId(), set: (id) => updater.adoptInstallId(id) }
+});
+// Automatic review prompts are driven by local accumulated application use, not
+// by remote telemetry preferences. The schedule is stored in the Drift profile.
+const reviewPrompt = createReviewPrompt({
+  readJson,
+  writeJson,
+  getVersion: () => app.getVersion()
 });
 // Toolbar buttons the user pinned next to the address bar, in display order.
 let toolbarPins = [];
@@ -251,7 +274,9 @@ function newTabData() {
   return data;
 }
 function newTabUrl() {
-  const q = new URLSearchParams({ engine: searchEngine, theme: colorTheme, mode: appearance, sc: newTabShortcuts, clock: newTabClock ? '1' : '0' });
+  const visual = normalizeAppearanceOptions(appearanceOptions);
+  const q = new URLSearchParams({ engine: searchEngine, theme: colorTheme, mode: appearance, sc: newTabShortcuts, clock: newTabClock ? '1' : '0', ntbg: visual.newTabBackground, ntlayout: visual.newTabLayout, nttile: visual.newTabTileSize, ntfont: visual.fontFamily, ntscale: String(visual.fontScale), ntmotion: visual.motion });
+  if (visual.accentColor) q.set('accent', visual.accentColor);
   const data = newTabData();
   if (data.b || data.s) q.set('d', Buffer.from(JSON.stringify(data)).toString('base64url'));
   return `${NEWTAB}?${q}`;
@@ -360,7 +385,9 @@ function currentHost() {
 }
 
 function chromeHeight() {
-  return showBookmarksBar ? CHROME_H_WITH_BOOKMARKS : CHROME_H_WITHOUT_BOOKMARKS;
+  const base = showBookmarksBar ? CHROME_H_WITH_BOOKMARKS : CHROME_H_WITHOUT_BOOKMARKS;
+  const scale = normalizeAppearanceOptions(appearanceOptions).fontScale / 100;
+  return Math.round(base * scale);
 }
 
 function tabBounds() {
@@ -370,7 +397,7 @@ function tabBounds() {
 }
 
 function layout() {
-  if (!win) return;
+  if (!winAlive()) return;
   const { width, height } = win.getContentBounds();
   ui?.setBounds({ x: 0, y: 0, width, height });
   palette?.setBounds({ x: 0, y: 0, width, height });
@@ -411,7 +438,7 @@ function snapshot() {
     currentHost: host,
     siteAllowed: isSiteAllowed(host),
     blockedHosts: Object.entries(blockedHostCounts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([hostName, count]) => ({ host: hostName, count })),
-    settings: { appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, autoUpdate, usageReports, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins },
+    settings: { appearance, colorTheme, appearanceOptions, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, autoUpdate, usageReports, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins, tabOptimizations },
     canAutoUpdate: updater.supported(),
     canReportUsage: telemetry.supported(),
     canLaunchAtLogin: process.platform !== 'linux',
@@ -420,7 +447,8 @@ function snapshot() {
     version: app.getVersion(),
     electronVersion: process.versions.electron,
     chromiumVersion: process.versions.chrome,
-    isMaximized: !!win?.isMaximized?.()
+    updateStatus: updater.getStatus(),
+    isMaximized: winAlive() ? !!win.isMaximized() : false
   };
 }
 
@@ -429,13 +457,16 @@ function push() {
   if (pushTimer) return;
   pushTimer = setTimeout(() => {
     pushTimer = null;
-    if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('state', snapshot());
+    if (quitting || !winAlive()) return;
+    try {
+    if (ui && wcAlive(ui.webContents)) ui.webContents.send('state', snapshot());
     const t = activeTab();
     const title = (t?.title || 'New tab') + ' — Drift Browser';
     if (win && !win.isDestroyed() && title !== lastWindowTitle) {
       lastWindowTitle = title;
       win.setTitle(title);
     }
+    } catch (error) { if (!quitting) console.warn('Drift could not refresh its window state:', error?.message || error); }
   }, 50);
 }
 
@@ -456,11 +487,11 @@ function addHistory(title, url) {
 }
 
 function sortedBookmarks() {
-  if (!bookmarksSortedCache) bookmarksSortedCache = bookmarks.slice().sort((a, b) => (a.title || a.url).localeCompare(b.title || b.url));
+  if (!bookmarksSortedCache) bookmarksSortedCache = bookmarks.slice(); // user-defined order (drag to reorder)
   return bookmarksSortedCache;
 }
 function persistBookmarks() { bookmarksSortedCache = null; writeJson('bookmarks.json', bookmarks); }
-function persistSettings() { return writeJson(SETTINGS_FILE, { settingsVersion: 2, adBlockEnabled, allowlistedSites, appearance, colorTheme, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, autoUpdate, usageReports, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins }); }
+function persistSettings() { return writeJson(SETTINGS_FILE, { settingsVersion: 4, adBlockEnabled, allowlistedSites, appearance, colorTheme, appearanceOptions, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, autoUpdate, usageReports, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins, tabOptimizations }); }
 
 
 function persistDownloads(immediate = false) {
@@ -709,7 +740,12 @@ function activateTab(tab) {
   // Remember what the tab being left looked like (including its scroll position) so its
   // hover preview still works after the renderer is hidden or discarded.
   const leaving = cur.active;
-  if (leaving && leaving !== tab && leaving.view && !isInternalUrl(leaving.url)) captureThumb(leaving, 800);
+  if (leaving && leaving !== tab) {
+    // The tab just left was in active use until this switch. Reset its idle clock
+    // here so long-lived foreground tabs do not become immediately eligible to sleep.
+    leaving.lastActive = Date.now();
+    if (leaving.view && !isInternalUrl(leaving.url)) captureThumb(leaving, 800);
+  }
   for (const t of cur.tabs) t.view?.setVisible(false);
   cur.active = tab;
   tab.lastActive = Date.now();
@@ -806,6 +842,27 @@ function liftChromeForCard(on) {
   }
 }
 
+ipcMain.handle('reviews:submit', async (event, payload) => {
+  // Only the trusted browser-chrome renderer may submit product feedback.
+  if (!ui || event.sender !== ui.webContents) return { ok: false, error: 'This review request is not allowed.' };
+  const result = await reviewService.submit(payload);
+  if (result?.ok) reviewPrompt.markSubmitted();
+  return result;
+});
+
+ipcMain.handle('reviews:maybe-prompt', (event) => {
+  if (!ui || event.sender !== ui.webContents) return { shouldPrompt: false, stopChecking: true };
+  return reviewPrompt.maybePrompt();
+});
+ipcMain.handle('reviews:prompt-shown', (event) => {
+  if (!ui || event.sender !== ui.webContents) return false;
+  return reviewPrompt.markPromptShown();
+});
+ipcMain.handle('reviews:defer', (event, choice) => {
+  if (!ui || event.sender !== ui.webContents) return false;
+  return reviewPrompt.defer(choice);
+});
+
 ipcMain.handle('tabs:preview', async (_e, rawId, withThumb = true) => {
   const tab = findTabById(Number(rawId));
   if (!tab) return null;
@@ -826,8 +883,8 @@ ipcMain.handle('tabs:preview', async (_e, rawId, withThumb = true) => {
 
 function destroyView(tab) {
   if (!tab.view) return;
-  try { win.contentView.removeChildView(tab.view); } catch { /* already detached */ }
-  if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+  try { if (winAlive()) win.contentView.removeChildView(tab.view); } catch { /* already detached */ }
+  try { const wc = tab.view.webContents; if (wcAlive(wc)) wc.close(); } catch { /* already gone */ }
   tab.view = null;
 }
 
@@ -929,32 +986,42 @@ function removeBookmark(url) {
   if (bookmarks.length !== before) { persistBookmarks(); push(); }
 }
 
+function isTabOptimizationExcluded(value) {
+  const host = hostnameOf(value || '').toLowerCase().replace(/\.$/, '');
+  if (!host) return false;
+  return tabOptimizations.excludedHosts.some((rule) => host === rule || host.endsWith(`.${rule}`));
+}
+
 // Free memory by discarding background tabs (see memory-manager.js for the policy). A
 // discarded tab keeps its URL, title and favicon and gets a fresh WebContents when selected.
 function discardIdleTabs() {
+  if (quitting || !winAlive() || !tabOptimizations.enabled) return;
   const live = [];
   for (const s of spaces) {
     for (const t of s.tabs) {
-      if (!t.view || t.view.webContents.isDestroyed()) continue;
-      const wc = t.view.webContents;
+      const wc = t.view?.webContents; // undefined once Electron has destroyed the view
+      if (!wcAlive(wc)) continue;
       live.push({
         tab: t,
+        wc,
         id: t.id,
         lastActive: t.lastActive,
         visible: s === cur && t === cur.active,
         audible: wc.isCurrentlyAudible(),
         busy: downloadOwners.has(wc.id) || (wc.isBeingCaptured?.() ?? false),
-        isNewTab: isNewTabUrl(liveUrl(t))
+        isNewTab: isNewTabUrl(liveUrl(t)),
+        excluded: isTabOptimizationExcluded(liveUrl(t) || t.url)
       });
     }
   }
   if (!live.some((entry) => !entry.visible)) return; // nothing in the background, skip the measurements
   const pressure = measurePressure({ getSystemMemoryInfo: () => process.getSystemMemoryInfo(), getAppMetrics: () => app.getAppMetrics(), isWindows: IS_WINDOWS });
-  for (const entry of live) entry.memoryKB = pressure.byPid.get(entry.tab.view.webContents.getOSProcessId()) || 0;
-  const doomed = new Set(planDiscards(live, { now: Date.now(), pressure: pressure.level }));
+  for (const entry of live) entry.memoryKB = wcAlive(entry.wc) ? (pressure.byPid.get(entry.wc.getOSProcessId()) || 0) : 0;
+  const policyPressure = tabOptimizations.pressureMode === 'off' ? 0 : pressure.level;
+  const doomed = new Set(planDiscards(live, { now: Date.now(), pressure: policyPressure, config: discardConfigFromSettings(tabOptimizations) }));
   let changed = false;
   for (const entry of live) {
-    if (!doomed.has(entry.id)) continue;
+    if (!doomed.has(entry.id) || !wcAlive(entry.wc)) continue;
     entry.tab.url = liveUrl(entry.tab) || entry.tab.url;
     entry.tab.loading = false;
     destroyView(entry.tab);
@@ -1241,7 +1308,31 @@ ipcMain.handle('menu:data', () => {
 });
 ipcMain.on('cmd', (_e, name, arg) => command(name, arg));
 
+// Settings > About > "Check for updates". The sender is always the browser chrome (checked below).
+const fromChrome = (event) => !!ui && event.sender === ui.webContents;
+ipcMain.handle('updates:check', async (event) => {
+  if (!fromChrome(event)) return updater.getStatus();
+  await updater.checkNow();
+  return updater.getStatus();
+});
+ipcMain.handle('updates:install', (event) => {
+  if (!fromChrome(event)) return false;
+  const started = updater.installNow();
+  if (started) setTimeout(() => app.quit(), 150); // the helper waits for this process to exit, installs, then reopens Drift
+  return started;
+});
+
 ipcMain.on('bookmark:update', (_e, url, title, newUrl, folder) => updateBookmark(String(url || ''), title, newUrl, folder));
+ipcMain.on('bookmark:reorder', (_e, rawUrl, rawTarget, after) => {
+  const url = String(rawUrl || ''); const target = String(rawTarget || '');
+  if (!url || !target || url === target) return;
+  const from = bookmarks.findIndex((b) => b.url === url);
+  if (from < 0 || !bookmarks.some((b) => b.url === target)) return;
+  const [item] = bookmarks.splice(from, 1);
+  const to = bookmarks.findIndex((b) => b.url === target);
+  bookmarks.splice(after === true ? to + 1 : to, 0, item);
+  persistBookmarks(); push();
+});
 ipcMain.on('bookmark:remove', (_e, url) => removeBookmark(String(url || '')));
 ipcMain.on('bookmark:add', (_e, title, rawUrl, folder) => {
   let url = String(rawUrl || '').trim();
@@ -1297,6 +1388,13 @@ ipcMain.on('settings:update', (_e, patch) => {
   let refreshNewTabs = false;
   if (APPEARANCES.includes(patch.appearance) && patch.appearance !== appearance) { appearance = patch.appearance; refreshNewTabs = true; applyAppearance(); }
   if (COLOR_THEME_IDS.includes(patch.colorTheme) && patch.colorTheme !== colorTheme) { colorTheme = patch.colorTheme; refreshNewTabs = true; }
+  if (patch.appearanceOptions && typeof patch.appearanceOptions === 'object' && !Array.isArray(patch.appearanceOptions)) {
+    const nextAppearanceOptions = normalizeAppearanceOptions({ ...appearanceOptions, ...patch.appearanceOptions });
+    if (JSON.stringify(nextAppearanceOptions) !== JSON.stringify(appearanceOptions)) {
+      appearanceOptions = nextAppearanceOptions;
+      refreshNewTabs = true;
+    }
+  }
   if (SEARCH_ENGINES.includes(patch.searchEngine) && patch.searchEngine !== searchEngine) { searchEngine = patch.searchEngine; refreshNewTabs = true; }
   if (SHORTCUT_MODES.includes(patch.newTabShortcuts) && patch.newTabShortcuts !== newTabShortcuts) { newTabShortcuts = patch.newTabShortcuts; refreshNewTabs = true; }
   if (typeof patch.newTabClock === 'boolean' && patch.newTabClock !== newTabClock) { newTabClock = patch.newTabClock; refreshNewTabs = true; }
@@ -1314,6 +1412,7 @@ ipcMain.on('settings:update', (_e, patch) => {
   if (typeof patch.downloadDirectory === 'string' && patch.downloadDirectory.trim()) downloadDirectory = patch.downloadDirectory.trim();
   if (typeof patch.adBlockEnabled === 'boolean') adBlockEnabled = patch.adBlockEnabled;
   if (Array.isArray(patch.toolbarPins)) toolbarPins = cleanToolbarPins(patch.toolbarPins);
+  if (patch.tabOptimizations && typeof patch.tabOptimizations === 'object' && !Array.isArray(patch.tabOptimizations)) tabOptimizations = normalizeTabOptimizationSettings({ ...tabOptimizations, ...patch.tabOptimizations });
   if (refreshNewTabs) {
     for (const tab of cur.tabs) {
       if (!isNewTabUrl(tab.url)) continue;
@@ -1576,8 +1675,11 @@ function scheduleWindowState() {
   windowStateTimer.unref?.();
 }
 
+let discardTimer = null;
 async function start() {
   ensureUserDataDirectories();
+  powerMonitor.on('suspend', () => reviewPrompt.pause());
+  powerMonitor.on('resume', () => reviewPrompt.resume());
   // A downloaded update that was not installed when Drift last closed is applied now, before any window opens.
   // The installer starts Drift again by itself, so 'exit' simply ends this process.
   const settingsOnDisk = readJson(SETTINGS_FILE, {});
@@ -1604,6 +1706,7 @@ async function start() {
   adBlockEnabled = settings.adBlockEnabled !== false;
   appearance = APPEARANCES.includes(settings.appearance) ? settings.appearance : 'system';
   colorTheme = COLOR_THEME_IDS.includes(settings.colorTheme) ? settings.colorTheme : 'violet';
+  appearanceOptions = normalizeAppearanceOptions(settings.appearanceOptions);
   searchEngine = SEARCH_ENGINES.includes(settings.searchEngine) ? settings.searchEngine : 'duckduckgo';
   // Older builds only had a "Restore previous session" switch.
   // Fresh installs (no saved choice) open a fresh New Tab page. Only an old build that explicitly
@@ -1622,6 +1725,7 @@ async function start() {
   applyAppearance();
   showBookmarksBar = settings.showBookmarksBar !== false;
   askWhereToSave = settings.askWhereToSave === true;
+  tabOptimizations = normalizeTabOptimizationSettings(settings.tabOptimizations);
   toolbarPins = cleanToolbarPins(settings.toolbarPins);
   downloadDirectory = typeof settings.downloadDirectory === 'string' && settings.downloadDirectory ? settings.downloadDirectory : app.getPath('downloads');
   try { fs.mkdirSync(downloadDirectory, { recursive: true }); } catch { downloadDirectory = app.getPath('downloads'); }
@@ -1674,10 +1778,13 @@ async function start() {
   win.on('unmaximize', () => { push(); scheduleWindowState(); });
   win.on('close', saveWindowState);
   win.on('closed', () => {
+    quitting = true; // the window is gone: nothing below may touch it again
+    clearInterval(discardTimer);
     saveSessionNow();
     clearTimeout(sessionTimer);
     clearTimeout(pushTimer);
-    for (const t of cur.tabs) if (t.view && !t.view.webContents.isDestroyed()) t.view.webContents.close();
+    pushTimer = null;
+    for (const t of cur.tabs) { try { const wc = t.view?.webContents; if (wcAlive(wc)) wc.close(); } catch { /* already gone */ } }
   });
 
   // Restore metadata, but only instantiate the selected tab's WebContents.
@@ -1716,11 +1823,23 @@ async function start() {
   win.show();
   // Focus requested before the window was visible can be dropped, so ask again once it is shown.
   if (cur.active && isNewTabUrl(cur.active.url)) setTimeout(() => { if (win && !win.isDestroyed() && !paletteOpen) focusNewTab(cur.active); }, 200);
-  const discardTimer = setInterval(discardIdleTabs, 15 * 1000);
+  discardTimer = setInterval(discardIdleTabs, 15 * 1000);
   discardTimer.unref?.();
+  updater.onStatus(() => push());
   updater.start(); // background check shortly after startup; installs when Drift closes
+  reviewPrompt.start(); // counts local app use for the automatic review prompt (30-minute threshold)
   telemetry.start(); // "open" a few seconds after launch, then a heartbeat every minute
 }
+
+// Electron shows a blocking "A JavaScript error occurred in the main process" dialog for any uncaught exception.
+// While Drift is closing (for example to install an update) objects are destroyed under running timers; that is
+// expected and harmless, so it is only logged. Anything else still gets the dialog.
+process.on('uncaughtException', (error) => {
+  const message = String(error && error.message || error);
+  if (quitting || /Object has been destroyed/i.test(message)) { console.warn('Ignored during shutdown:', message); return; }
+  console.error(error);
+  try { dialog.showErrorBox('Drift ran into a problem', error && error.stack ? error.stack : message); } catch { /* nothing more to do */ }
+});
 
 if (process.platform === 'win32') app.setAppUserModelId('org.drift.browser');
 // Lower baseline memory: switch off Chromium background services a browser this size does not use (translation
@@ -1737,8 +1856,10 @@ if (!app.requestSingleInstanceLock()) {
   });
   let closeReported = false;
   app.on('before-quit', (event) => {
+    quitting = true;
     persistSettings(); // final flush so no preference change can be lost
-    if (win && !win.isDestroyed()) saveSessionNow();
+    reviewPrompt.stop(); // persist exact accumulated review-prompt usage before the process exits
+    if (winAlive()) saveSessionNow();
     storage.flushAll(); // history, downloads and anything else still waiting on a debounce timer
     // Tell the monitor this session ended, then quit for real. The report is capped at a couple of seconds
     // (reportCloseTimeoutMs) so closing Drift never feels slow, and it runs only once.

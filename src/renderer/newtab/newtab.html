@@ -13,12 +13,15 @@
   <main class="page">
     <header class="topbar">
       <div class="brand"><img src="../shared/assets/drift-mark.svg" alt=""><span class="wm" role="img" aria-label="Drift">Dr<span class="wm-i" aria-hidden="true">ı</span>ft</span><span class="brand-sub-nt">Browser</span></div>
-      <div class="clock" id="clock-wrap" aria-live="off"><div class="clock-time" id="clock"></div><div class="clock-day" id="day"></div></div>
     </header>
 
-    <div class="content">
+    <div class="stage">
       <section class="hero">
         <p class="greeting" id="greeting"></p>
+        <div class="clock" id="clock-wrap" aria-live="off">
+          <div class="clock-row"><div class="clock-time" id="clock"></div><span class="clock-period" id="clock-period"></span></div>
+          <div class="clock-day" id="day"></div>
+        </div>
         <h1>Find your flow.</h1>
         <p class="tagline">A quieter, faster way to move around the web.</p>
 
@@ -30,6 +33,13 @@
           <ul id="suggest" class="popover suggest" role="listbox" hidden></ul>
           <ul id="engine-menu" class="popover engine-menu" role="listbox" aria-label="Search engine" hidden></ul>
         </form>
+
+        <footer class="hints" aria-label="Keyboard shortcuts">
+          <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>K</kbd>Command palette</span>
+          <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>T</kbd>New tab</span>
+          <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>L</kbd>Address bar</span>
+          <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>D</kbd>Bookmark page</span>
+        </footer>
       </section>
 
       <section class="shortcuts" id="shortcuts" aria-label="Shortcuts">
@@ -37,13 +47,6 @@
         <div class="tiles" id="tiles"></div>
       </section>
     </div>
-
-    <footer class="hints" aria-label="Keyboard shortcuts">
-      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>K</kbd>Command palette</span>
-      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>T</kbd>New tab</span>
-      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>L</kbd>Address bar</span>
-      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>D</kbd>Bookmark page</span>
-    </footer>
   </main>
 
   <dialog id="pin-dialog" class="pin-dialog" aria-labelledby="pin-title">

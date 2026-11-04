@@ -1,4 +1,5 @@
 'use strict';
+const { finish } = require('./test-exit.cjs');
 
 // Exercises src/main/telemetry.js against a fake monitor gateway that applies the same validation as the real
 // client-gateway.php (resource=telemetry): no Electron and no Windows needed.
@@ -229,12 +230,11 @@ const newState = () => ({ requests: [], statuses: [], hang: false, canonicalInst
     assert.equal(state.requests.length, 0);
   });
 
-  server.close();
   let failed = 0;
   for (const [ok, name, error] of results) {
     console.log(`${ok ? 'PASS' : 'FAIL'} ${name}`);
     if (!ok) { failed += 1; console.log(`     ${error && error.stack ? error.stack.split('\n').slice(0, 4).join('\n     ') : error}`); }
   }
   console.log(`\n${results.length - failed}/${results.length} passed`);
-  process.exit(failed ? 1 : 0);
+  await finish(failed, [server]);
 })();

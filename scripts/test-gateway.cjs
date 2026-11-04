@@ -1,4 +1,5 @@
 'use strict';
+const { finish } = require('./test-exit.cjs');
 
 // Exercises src/main/monitor-gateway.js and the telemetry offline queue against fake monitors:
 //   npm run test:gateway
@@ -118,5 +119,5 @@ const mk = (config) => createGateway({ config: { allowInsecure: true, ...config 
   for (const [ok, name, error] of results) console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${ok ? '' : `\n  ${error && error.stack || error}`}`);
   const failed = results.filter((r) => !r[0]).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);
-  process.exit(failed ? 1 : 0);
+  await finish(failed, []);
 })();

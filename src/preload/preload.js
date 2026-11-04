@@ -3,12 +3,12 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const RECEIVE_CHANNELS = ['state', 'focus-address', 'palette:open', 'find:show', 'extension:confirm', 'reset-address', 'clear-data:show', 'tabs:search'];
 const MANAGE_CHANNELS = [
-  'bookmark:update', 'bookmark:remove', 'bookmark:add',
+  'bookmark:update', 'bookmark:remove', 'bookmark:add', 'bookmark:reorder',
   'history:remove', 'history:clear',
   'adblock:toggle', 'adblock:toggle-site', 'adblock:reset-count', 'settings:update',
   'downloads:action', 'find:query', 'find:next', 'find:close', 'extension:confirm-response'
 ];
-const INVOKE_CHANNELS = ['downloads:choose-folder', 'downloads:clear', 'extensions:install', 'extensions:install-store', 'extensions:remove', 'data:clear', 'menu:data', 'tabs:preview'];
+const INVOKE_CHANNELS = ['downloads:choose-folder', 'downloads:clear', 'extensions:install', 'extensions:install-store', 'extensions:remove', 'data:clear', 'menu:data', 'tabs:preview', 'reviews:submit', 'reviews:maybe-prompt', 'reviews:prompt-shown', 'reviews:defer', 'updates:check', 'updates:install'];
 
 contextBridge.exposeInMainWorld('drift', {
   platform: process.platform,

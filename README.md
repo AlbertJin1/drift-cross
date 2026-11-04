@@ -14,7 +14,7 @@ MIT licensed. Node.js 20+ required to build.
 - **Data:** bookmarks with folders and a quick-access bar, persistent history, downloads manager, clear browsing data.
 - **Privacy:** ad and tracker blocking at the request layer, with a global switch and per-site exceptions.
 - **Extensions:** Chrome Web Store (Manifest V3) and unpacked extensions.
-- **Customisation:** light, dark or system appearance, eight accent themes, pinnable toolbar tools, configurable startup and new-tab behaviour.
+- **Customisation:** light, dark or system appearance, eight accent themes plus custom accent colors, interface font and text scale, density, corner style, tab appearance and width, chrome tint, motion controls, bookmark labels, New Tab backgrounds, layouts and tile sizes.
 - **Performance:** idle background tabs are discarded under a memory-aware policy, tab creation is lazy, and disk writes are coalesced and atomic.
 
 ## Keyboard shortcuts
@@ -140,3 +140,20 @@ Pressure compares Drift's private memory with 30% of installed RAM (minimum 1.25
 ## License
 
 [MIT](LICENSE). Interface icons are [Font Awesome Free](https://fontawesome.com/license/free) (CC BY 4.0) via `react-icons` (MIT).
+
+## Automatic product review
+
+Drift shows its product-review form in a modal after at least 30 minutes of accumulated application use. The form is not embedded in Settings or the About page. It follows the same general prompt cadence as PDF Studio Electron:
+
+- The initial check is delayed for a few minutes after launch and uses a randomized check schedule after that.
+- **Remind me later** snoozes the prompt for seven days. **Don’t ask me again** disables automatic prompts permanently for this profile.
+- After a review is submitted, another automatic prompt is held for 90 days and requires at least 30 minutes of additional app use. A new major version removes the 90-day wait but still requires fresh use.
+- Usage timing is stored locally in `%APPDATA%\\Drift\\review-prompt-state.json`, is independent of the optional remote usage-reporting setting, and pauses while Windows suspends the computer.
+- A review submission uses the existing Universal App Monitor gateway. The review payload contains the rating, optional name, written feedback, app version and anonymous install ID. It does not contain tabs, browsing history, visited pages, PC name or LAN address.
+
+Tests: `npm run test:review-prompt`.
+
+
+### Tab optimization (1.3.8)
+
+Open Settings > Appearance to customize the browser palette, typography, density, corners, tab strip, motion and New Tab design. Settings > Tabs lets you tune inactive-tab suspension, background renderer limits, memory-pressure behavior, New Tab expiry, recent-tab protection, and domains that should remain loaded. Visible, audible, captured, and downloading tabs are always protected.

@@ -2,8 +2,8 @@ const $ = (id) => document.getElementById(id);
 let state = {
   tabs: [], url: '', internalPage: '', bookmarks: [], history: [], downloads: [], extensions: [],
   blockedHosts: [], blocked: 0, adBlockEnabled: true,
-  settings: { appearance: 'system', colorTheme: 'violet', searchEngine: 'duckduckgo', startupMode: 'newtab', startupPages: [], homepage: '', showHomeButton: false, newTabOpens: 'newtab', newTabShortcuts: 'smart', newTabClock: true, windowStart: 'default', launchAtLogin: false, showBookmarksBar: true, askWhereToSave: false },
-  version: '1.3.0', find: { visible: false, activeMatchOrdinal: 0, matches: 0 }
+  settings: { appearance: 'system', colorTheme: 'violet', appearanceOptions: { accentColor: '', density: 'comfortable', fontScale: 100, fontFamily: 'system', cornerStyle: 'soft', tabStyle: 'underline', tabWidth: 'balanced', motion: 'full', chromeTint: 'balanced', bookmarkDisplay: 'labels', newTabBackground: 'aurora', newTabLayout: 'centered', newTabTileSize: 'medium' }, searchEngine: 'duckduckgo', startupMode: 'newtab', startupPages: [], homepage: '', showHomeButton: false, newTabOpens: 'newtab', newTabShortcuts: 'smart', newTabClock: true, windowStart: 'default', launchAtLogin: false, showBookmarksBar: true, askWhereToSave: false, tabOptimizations: { enabled: true, idleMinutes: 3, maxBackgroundLive: 4, newTabIdleSeconds: 20, recentGraceSeconds: 45, pressureMode: 'balanced', excludedHosts: [] } },
+  version: '1.3.9', find: { visible: false, activeMatchOrdinal: 0, matches: 0 }
 };
 document.body.classList.toggle('is-windows', drift.platform === 'win32');
 const tabEls = new Map();
@@ -12,6 +12,10 @@ let lastBookmarkBarSignature = '';
 let lastBlockedHostsSignature = null; // blocked-host list rebuilds only when it changes
 let lastMaximizedState = null;        // maximize/restore icon is swapped only when the state flips
 let currentSettingsSection = 'general';
+const reviewFormState = { rating: 0, name: '', message: '', busy: false, status: '', statusType: '' };
+let reviewPromptTimer = null;
+let reviewPromptStopped = false;
+let reviewManual = false;
 let bookmarkFilter = '';
 let bookmarkFolderFilter = '';
 let historyFilter = '';
@@ -245,8 +249,11 @@ function layoutTabs() {
   if (listBtn.hidden === showList) listBtn.hidden = !showList;
   const countLabel = String(count);
   if ($('tab-list-count').textContent !== countLabel) $('tab-list-count').textContent = countLabel;
-  const min = cssPx(box, '--tab-min', 36); const ideal = cssPx(box, '--tab-ideal', 178); const gap = cssPx(box, '--tab-gap', 4);
-  const activeMin = 128; // the active tab always keeps room for icon + title + close
+  const tabWidthMode = state.settings?.appearanceOptions?.tabWidth || 'balanced';
+  const min = tabWidthMode === 'compact' ? 34 : tabWidthMode === 'wide' ? 46 : 40;
+  const ideal = tabWidthMode === 'compact' ? 148 : tabWidthMode === 'wide' ? 210 : 178;
+  const gap = cssPx(box, '--tab-gap', 4);
+  const activeMin = tabWidthMode === 'compact' ? 112 : tabWidthMode === 'wide' ? 150 : 128; // the active tab always keeps room for icon + title + close
   const barStyle = getComputedStyle(bar);
   const siblings = Array.from(bar.children).filter((el) => el !== box && getComputedStyle(el).display !== 'none');
   const used = siblings.reduce((sum, el) => sum + (el.id === 'tab-spacer' ? 0 : el.offsetWidth), 0);
@@ -621,6 +628,7 @@ window.addEventListener('resize', () => { if (TL.open) positionTabList(); });
 function makeBookmarkButton(bookmark) {
   const button = document.createElement('button');
   button.className = 'bookmark-link';
+  button.draggable = true;
   button.dataset.url = bookmark.url;
   button.title = `${bookmark.title || bookmark.url}\n${bookmark.url}`;
   button.addEventListener('click', () => drift.cmd('go', bookmark.url));
@@ -676,6 +684,13 @@ function renderProtection() {
   }
 }
 
+function darkenHex(hex, amount = 0.22) {
+  const value = String(hex || '').replace('#', '');
+  if (!/^[0-9a-f]{6}$/i.test(value)) return '#573cd8';
+  const channels = [0, 2, 4].map((offset) => Math.max(0, Math.min(255, Math.round(parseInt(value.slice(offset, offset + 2), 16) * (1 - amount)))));
+  return `#${channels.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
 function applySettings() {
   const preferences = state.settings || {};
   const mode = ['system', 'light', 'dark'].includes(preferences.appearance) ? preferences.appearance : 'system';
@@ -684,11 +699,35 @@ function applySettings() {
   document.documentElement.dataset.theme = mode === 'system' ? (systemLight.matches ? 'light' : 'dark') : mode;
   $('home')?.classList.toggle('hidden', preferences.showHomeButton !== true);
   const colorTheme = COLOR_THEMES.some((item) => item.id === preferences.colorTheme) ? preferences.colorTheme : 'violet';
-  document.documentElement.dataset.colorTheme = colorTheme;
+  const root = document.documentElement;
+  root.dataset.colorTheme = colorTheme;
+  const visual = preferences.appearanceOptions || {};
+  const accent = /^#[0-9a-f]{6}$/i.test(visual.accentColor || '') ? visual.accentColor : '';
+  if (accent) {
+    root.style.setProperty('--accent', accent);
+    root.style.setProperty('--accent-strong', darkenHex(accent, 0.22));
+    root.style.setProperty('--glyph-accent', accent);
+  } else {
+    root.style.removeProperty('--accent');
+    root.style.removeProperty('--accent-strong');
+    root.style.removeProperty('--glyph-accent');
+  }
+  root.dataset.uiDensity = ['compact', 'comfortable', 'spacious'].includes(visual.density) ? visual.density : 'comfortable';
+  root.dataset.cornerStyle = ['square', 'soft', 'rounded'].includes(visual.cornerStyle) ? visual.cornerStyle : 'soft';
+  root.dataset.tabStyle = ['underline', 'card', 'pill', 'minimal'].includes(visual.tabStyle) ? visual.tabStyle : 'underline';
+  root.dataset.motion = ['full', 'reduced', 'off'].includes(visual.motion) ? visual.motion : 'full';
+  root.dataset.chromeTint = ['neutral', 'subtle', 'balanced', 'strong'].includes(visual.chromeTint) ? visual.chromeTint : 'balanced';
+  const fontScale = [90, 95, 100, 105, 110, 115, 120].includes(Number(visual.fontScale)) ? Number(visual.fontScale) : 100;
+  root.style.setProperty('--ui-font-scale', String(fontScale / 100));
+  const chrome = $('chrome');
+  if (chrome) { chrome.style.zoom = String(fontScale / 100); chrome.style.width = `${10000 / fontScale}%`; }
+  const fontFamilies = { system: 'system-ui, -apple-system, "Segoe UI", sans-serif', inter: 'Inter, system-ui, sans-serif', segoe: '"Segoe UI", system-ui, sans-serif', arial: 'Arial, Helvetica, sans-serif' };
+  root.style.setProperty('--ui-font-family', fontFamilies[visual.fontFamily] || fontFamilies.system);
+  document.body.classList.toggle('bookmarks-icons-only', visual.bookmarkDisplay === 'icons');
   document.body.classList.toggle('hide-bookmarks', preferences.showBookmarksBar === false);
   const isWindows = drift.platform === 'win32';
   document.documentElement.style.setProperty('--chrome-height', `${preferences.showBookmarksBar === false ? 82 : 120}px`);
-  if ($('window-version')) $('window-version').textContent = (state.version || '1.3.0').split('.').slice(0, 2).join('.');
+  if ($('window-version')) $('window-version').textContent = (state.version || '1.3.9').split('.').slice(0, 2).join('.');
   if ($('win-maximize')) {
     if (lastMaximizedState !== !!state.isMaximized) {
       lastMaximizedState = !!state.isMaximized;
@@ -751,6 +790,196 @@ function modePickerMarkup(current) {
   ];
   return `<div class="mode-picker" role="radiogroup" aria-label="Interface mode">${modes.map(([id, name, hint, preview]) => `<label class="mode-option ${current === id ? 'selected' : ''}"><input type="radio" name="appearance-mode" value="${id}" ${current === id ? 'checked' : ''}><span class="mode-preview">${preview}</span><span class="mode-name">${name}</span><small>${hint}</small></label>`).join('')}</div>`;
 }
+function updateReviewFormUI() {
+  const rating = Number(reviewFormState.rating) || 0;
+  const labels = ['', 'Poor', 'Fair', 'Good', 'Very good', 'Excellent'];
+  const label = $('review-rating-label');
+  if (label) label.textContent = labels[rating] || 'Choose a rating';
+  document.querySelectorAll('[data-review-rating]').forEach((button) => {
+    const value = Number(button.dataset.reviewRating);
+    button.classList.toggle('selected', value <= rating);
+    button.setAttribute('aria-pressed', String(value === rating));
+    button.disabled = reviewFormState.busy;
+  });
+  const submit = $('review-submit');
+  if (submit) {
+    submit.disabled = rating < 1 || reviewFormState.busy;
+    submit.textContent = reviewFormState.busy ? 'Sending…' : 'Send review';
+  }
+  const form = $('review-form');
+  if (form) form.setAttribute('aria-busy', String(reviewFormState.busy));
+  for (const id of ['review-name', 'review-message']) {
+    const field = $(id);
+    if (field) field.disabled = reviewFormState.busy;
+  }
+  for (const id of ['review-close', 'review-later', 'review-never']) {
+    const button = $(id);
+    if (button) button.disabled = reviewFormState.busy;
+  }
+  const status = $('review-status');
+  if (status) {
+    status.textContent = reviewFormState.status;
+    status.className = `review-status ${reviewFormState.statusType ? `is-${reviewFormState.statusType}` : ''}`;
+  }
+  const message = $('review-message');
+  const counter = $('review-char-count');
+  if (message && counter) counter.textContent = `${message.value.length}/1500`;
+}
+
+async function submitReview() {
+  if (reviewFormState.busy) return;
+  if (!Number.isInteger(reviewFormState.rating) || reviewFormState.rating < 1 || reviewFormState.rating > 5) {
+    reviewFormState.status = 'Choose a star rating before sending your review.';
+    reviewFormState.statusType = 'error';
+    updateReviewFormUI();
+    return;
+  }
+
+  const payload = { rating: reviewFormState.rating, name: reviewFormState.name, message: reviewFormState.message };
+  reviewFormState.busy = true;
+  reviewFormState.status = 'Sending your review securely…';
+  reviewFormState.statusType = 'pending';
+  updateReviewFormUI();
+  try {
+    const result = await drift.invoke('reviews:submit', payload);
+    if (!result || result.ok !== true) throw new Error(result?.error || 'The review could not be sent. Please try again.');
+    reviewFormState.status = 'Thank you! Your review was received by the Drift feedback service.';
+    reviewFormState.statusType = 'success';
+    updateReviewFormUI();
+    await new Promise((resolve) => setTimeout(resolve, 950));
+    if (!$('reviewDialog').classList.contains('hidden')) closeDialog('reviewDialog');
+    resetReviewForm();
+    setReviewDialogMode(false);
+    scheduleReviewPromptCheck(60 * 60_000);
+  } catch (error) {
+    reviewFormState.status = error?.message || 'The review could not be sent. Check your connection and try again.';
+    reviewFormState.statusType = 'error';
+  } finally {
+    reviewFormState.busy = false;
+    updateReviewFormUI();
+  }
+}
+
+function resetReviewForm() {
+  reviewFormState.rating = 0;
+  reviewFormState.name = '';
+  reviewFormState.message = '';
+  reviewFormState.busy = false;
+  reviewFormState.status = '';
+  reviewFormState.statusType = '';
+  if ($('review-name')) $('review-name').value = '';
+  if ($('review-message')) $('review-message').value = '';
+  updateReviewFormUI();
+}
+
+function setReviewDialogMode(manual) {
+  reviewManual = !!manual;
+  const never = $('review-never'); const later = $('review-later'); const close = $('review-close');
+  if (never) never.hidden = reviewManual;
+  if (later) later.textContent = reviewManual ? 'Cancel' : 'Remind me later';
+  if (close) { const t = reviewManual ? 'Close' : 'Remind me later'; close.title = t; close.setAttribute('aria-label', t); }
+  const eyebrow = document.querySelector('#reviewDialog .review-dialog-eyebrow');
+  if (eyebrow) eyebrow.textContent = reviewManual ? 'WRITE A REVIEW' : 'A QUICK PRODUCT REVIEW';
+}
+// Opened by the user from the menu or Settings > About; never touches the automatic-prompt schedule.
+function openReviewManually() {
+  if (visibleDialogs().some((d) => d.id !== 'reviewDialog')) return;
+  resetReviewForm();
+  setReviewDialogMode(true);
+  openDialog('reviewDialog');
+  setTimeout(() => $('review-message')?.focus(), 30);
+}
+
+async function deferReview(choice = 'later') {
+  if (reviewFormState.busy) return;
+  if (reviewManual) { closeDialog('reviewDialog'); resetReviewForm(); setReviewDialogMode(false); return; }
+  try { await drift.invoke('reviews:defer', choice); }
+  catch (error) { console.warn('[Drift] Could not save the review reminder preference:', error?.message || error); }
+  closeDialog('reviewDialog');
+  resetReviewForm();
+  if (String(choice) === 'never') {
+    reviewPromptStopped = true;
+    if (reviewPromptTimer) clearTimeout(reviewPromptTimer);
+    reviewPromptTimer = null;
+  } else {
+    scheduleReviewPromptCheck(24 * 60 * 60_000);
+  }
+}
+
+function scheduleReviewPromptCheck(delayMs) {
+  if (reviewPromptStopped) return;
+  if (reviewPromptTimer) clearTimeout(reviewPromptTimer);
+  const requested = Number(delayMs);
+  const delay = Number.isFinite(requested) && requested > 0
+    ? Math.max(60_000, Math.min(24 * 60 * 60 * 1000, requested))
+    : 15 * 60_000;
+  reviewPromptTimer = setTimeout(checkReviewPrompt, delay);
+}
+
+async function checkReviewPrompt() {
+  if (reviewPromptStopped) return;
+  // Do not interrupt another browser dialog or display a prompt while the renderer is hidden.
+  if (document.visibilityState === 'hidden' || visibleDialogs().length > 0) {
+    scheduleReviewPromptCheck(60_000);
+    return;
+  }
+  try {
+    const result = await drift.invoke('reviews:maybe-prompt');
+    if (result?.stopChecking) { reviewPromptStopped = true; return; }
+    if (result?.shouldPrompt) {
+      if (visibleDialogs().length > 0 || document.visibilityState === 'hidden') {
+        scheduleReviewPromptCheck(60_000);
+        return;
+      }
+      const marked = await drift.invoke('reviews:prompt-shown');
+      if (marked && visibleDialogs().length === 0 && document.visibilityState !== 'hidden') {
+        resetReviewForm();
+        setReviewDialogMode(false);
+        openDialog('reviewDialog');
+        $('review-name')?.focus();
+        return;
+      }
+      if (marked) await drift.invoke('reviews:defer', 'later').catch(() => {});
+      scheduleReviewPromptCheck(60_000);
+      return;
+    }
+    scheduleReviewPromptCheck(result?.nextCheckAfterMs);
+  } catch (error) {
+    console.warn('[Drift] Automatic review prompt check failed:', error?.message || error);
+    scheduleReviewPromptCheck(30 * 60_000);
+  }
+}
+
+function startReviewPromptChecks() {
+  if (reviewPromptTimer || reviewPromptStopped) return;
+  // Match PDF Studio: first check occurs a few minutes after launch; the main
+  // process decides whether accumulated application use qualifies for a prompt.
+  scheduleReviewPromptCheck(Math.round((4 + Math.random() * 5) * 60_000));
+}
+
+// Settings > About: the update panel. One button whose meaning follows the updater's phase.
+function updatePanelMarkup() {
+  const u = state.updateStatus || { phase: 'idle' };
+  const busy = u.phase === 'checking' || u.phase === 'downloading';
+  let line = 'Drift looks for updates in the background. You can also check now.';
+  let button = '<button class="small-action primary-action" data-action="check-updates">Check for updates</button>';
+  if (u.phase === 'checking') { line = 'Checking for updates…'; button = '<button class="small-action" disabled>Checking…</button>'; }
+  else if (u.phase === 'downloading') {
+    const pct = Math.round(Math.max(0, Math.min(1, u.progress || 0)) * 100);
+    line = `Downloading Drift ${escapeHtml(u.version || '')}… ${pct}%`;
+    button = '<button class="small-action" disabled>Downloading…</button>';
+  }
+  else if (u.phase === 'ready') { line = `Drift ${escapeHtml(u.version || '')} is ready. Restart Drift to finish updating — your tabs come back.`; button = '<button class="small-action primary-action" data-action="install-update">Restart to update</button>'; }
+  else if (u.phase === 'up-to-date') line = `You’re up to date — Drift ${escapeHtml(state.version || '')} is the latest version.`;
+  else if (u.phase === 'error') line = `Couldn’t check for updates. ${escapeHtml(u.message || '')}`;
+  else if (u.phase === 'unsupported') { line = escapeHtml(u.message || 'Automatic updates are not available for this install.'); }
+  const bar = u.phase === 'downloading' ? `<div class="update-bar"><span style="width:${Math.round((u.progress || 0) * 100)}%"></span></div>` : '';
+  return `<section class="about-panel about-update">
+    <span class="about-label">Updates</span>
+    <div class="about-profile-row"><div class="about-review-copy"><strong>Drift ${escapeHtml(state.version || '')}</strong><small>${line}</small>${bar}</div>${button}</div>
+  </section>`;
+}
+
 function renderSettingsContent() {
   const prefs = state.settings || {};
   const sections = {
@@ -770,11 +999,29 @@ function renderSettingsContent() {
       ]
     },
     appearance: {
-      title: 'Appearance', intro: 'Make the browser comfortable to use, day or night.', cards: [
+      title: 'Appearance', intro: 'Personalize Drift’s colors, typography, spacing, tabs, and motion.', cards: [
         ['Interface mode', 'Light, dark, or follow your operating system automatically.', modePickerMarkup(prefs.appearance || 'system'), 'mode-card'],
-        ['Color theme', 'An accent palette for tabs, controls, highlights, and browser pages.',
+        ['Color theme', 'Choose a coordinated accent palette. A custom accent below can override the palette color.',
           `<div class="theme-picker-block"><div class="theme-grid">${COLOR_THEMES.map((theme) => `<button type="button" class="theme-option ${((prefs.colorTheme || 'violet') === theme.id) ? 'selected' : ''}" data-color-theme="${theme.id}" aria-pressed="${(prefs.colorTheme || 'violet') === theme.id}" title="${theme.name} theme"><span class="theme-preview theme-preview-${theme.id}"><i></i><i></i><i></i></span><span class="theme-option-name">${theme.name}</span>${(prefs.colorTheme || 'violet') === theme.id ? '<span class="theme-check">✓</span>' : ''}</button>`).join('')}</div></div>`],
-        ['Toolbar', '', settingRow('Bookmarks bar', 'Keep favorite websites one click below the address bar.', switchSetting('show-bookmarks-setting', prefs.showBookmarksBar !== false))],
+        ['Your accent color', 'Pick any custom accent for highlights, active tabs, focus rings, and buttons. Choose “Use theme color” to return to the palette.', `<div class="appearance-accent-control"><label class="accent-swatch-label" for="appearance-accent-setting"><input id="appearance-accent-setting" type="color" value="${/^#[0-9a-f]{6}$/i.test((prefs.appearanceOptions || {}).accentColor || '') ? (prefs.appearanceOptions || {}).accentColor : (COLOR_THEMES.find((item) => item.id === (prefs.colorTheme || 'violet')) || COLOR_THEMES[0]).primary}" aria-label="Choose custom browser accent"><span>Custom accent</span></label><button type="button" class="small-action" data-reset-accent>Use theme color</button></div>`],
+        ['Typography and sizing', 'Set the interface font and scale browser controls to your preference.', [
+          settingRow('Interface font', 'Changes the font used throughout Drift’s browser interface.', selectSetting('appearance-font-family-setting', (prefs.appearanceOptions || {}).fontFamily || 'system', [['system', 'System default'], ['inter', 'Inter'], ['segoe', 'Segoe UI'], ['arial', 'Arial']])),
+          settingRow('Browser interface scale', 'Scale the tab strip, toolbar, buttons, and browser controls without changing website zoom.', selectSetting('appearance-font-scale-setting', String((prefs.appearanceOptions || {}).fontScale ?? 100), [['90', 'Extra small · 90%'], ['95', 'Small · 95%'], ['100', 'Default · 100%'], ['105', 'Large · 105%'], ['110', 'Larger · 110%'], ['115', 'Extra large · 115%'], ['120', 'Maximum · 120%']]))
+        ].join('')],
+        ['Layout and spacing', 'Choose how compact or open the browser controls feel.', [
+          settingRow('Interface density', 'Adjust horizontal spacing in tabs, toolbar controls, and bookmarks.', selectSetting('appearance-density-setting', (prefs.appearanceOptions || {}).density || 'comfortable', [['compact', 'Compact'], ['comfortable', 'Comfortable'], ['spacious', 'Spacious']])),
+          settingRow('Corner shape', 'Choose the shape used by tabs, fields, buttons, and panels.', selectSetting('appearance-corners-setting', (prefs.appearanceOptions || {}).cornerStyle || 'soft', [['square', 'Square'], ['soft', 'Soft'], ['rounded', 'Rounded']])),
+          settingRow('Browser chrome tint', 'Control how strongly your accent color tints the browser toolbar and surfaces.', selectSetting('appearance-chrome-tint-setting', (prefs.appearanceOptions || {}).chromeTint || 'balanced', [['neutral', 'Neutral'], ['subtle', 'Subtle'], ['balanced', 'Balanced'], ['strong', 'Strong']]))
+        ].join('')],
+        ['Tab strip style', 'Choose the active-tab treatment and preferred tab width.', [
+          settingRow('Tab appearance', 'Change how the selected tab is shown.', selectSetting('appearance-tab-style-setting', (prefs.appearanceOptions || {}).tabStyle || 'underline', [['underline', 'Underline'], ['card', 'Raised card'], ['pill', 'Pill'], ['minimal', 'Minimal']])),
+          settingRow('Tab width', 'Set the preferred width before Drift compresses inactive tabs.', selectSetting('appearance-tab-width-setting', (prefs.appearanceOptions || {}).tabWidth || 'balanced', [['compact', 'Compact'], ['balanced', 'Balanced'], ['wide', 'Wide']]))
+        ].join('')],
+        ['Bookmarks bar', 'Keep favorite websites one click below the address bar.', [
+          settingRow('Show bookmarks bar', 'Display the bookmarks toolbar below the address bar.', switchSetting('show-bookmarks-setting', prefs.showBookmarksBar !== false)),
+          settingRow('Bookmark labels', 'Show website names or use favicon-style initials to save space.', selectSetting('appearance-bookmark-display-setting', (prefs.appearanceOptions || {}).bookmarkDisplay || 'labels', [['labels', 'Icons and labels'], ['icons', 'Icons only']]))
+        ].join('')],
+        ['Motion and animation', 'Choose how much movement Drift uses for tabs, dialogs, and transitions.', settingRow('Animation behavior', 'Reduced keeps essential feedback; Off disables interface animations and transitions.', selectSetting('appearance-motion-setting', (prefs.appearanceOptions || {}).motion || 'full', [['full', 'Full animations'], ['reduced', 'Reduced motion'], ['off', 'Turn animations off']]))],
         ['Pinned tools', 'Choose which tools sit next to the address bar and the order they appear in.', pinSettingsMarkup(), 'pin-card']
       ]
     },
@@ -784,10 +1031,26 @@ function renderSettingsContent() {
           settingRow('New tabs open with', 'What appears when you press Ctrl+T or the + button.', selectSetting('newtab-opens-setting', prefs.newTabOpens || 'newtab', [['newtab', 'New Tab page'], ['homepage', 'Home page'], ['blank', 'Blank page']])),
           (prefs.newTabOpens === 'homepage' && !prefs.homepage) ? `<div class="setting-note">No home page is set, so new tabs will show the New Tab page. <button class="link-action" data-setting-section-link="general">Set a home page</button></div>` : ''
         ].join('')],
-        ['New Tab page', 'Applies when the New Tab page is shown.', [
+        ['New Tab page', 'Choose what appears on a new tab and how it looks.', [
           settingRow('Shortcuts', 'Which sites appear under the search box.', selectSetting('newtab-shortcuts-setting', prefs.newTabShortcuts || 'smart', [['smart', 'Most visited sites'], ['bookmarks', 'Recent bookmarks'], ['hidden', 'Hidden']])),
-          settingRow('Show date and time', 'Display the clock and date at the top of the page.', switchSetting('newtab-clock-setting', prefs.newTabClock !== false))
+          settingRow('Show date and time', 'Display the clock and date at the top of the page.', switchSetting('newtab-clock-setting', prefs.newTabClock !== false)),
+          settingRow('Background style', 'Choose the New Tab page atmosphere.', selectSetting('appearance-newtab-background-setting', (prefs.appearanceOptions || {}).newTabBackground || 'aurora', [['aurora', 'Aurora'], ['midnight', 'Midnight'], ['paper', 'Paper'], ['forest', 'Forest'], ['sunset', 'Sunset']])),
+          settingRow('Page layout', 'Set the overall content width and spacing.', selectSetting('appearance-newtab-layout-setting', (prefs.appearanceOptions || {}).newTabLayout || 'centered', [['centered', 'Centered'], ['wide', 'Wide'], ['compact', 'Compact']])),
+          settingRow('Shortcut tile size', 'Make quick-access tiles smaller or larger.', selectSetting('appearance-newtab-tile-size-setting', (prefs.appearanceOptions || {}).newTabTileSize || 'medium', [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']]))
         ].join('')]
+      ]
+    },
+    tabs: {
+      title: 'Tab optimization', intro: 'Choose how Drift manages inactive tabs and balances memory use.', cards: [
+        ['Automatic tab management', 'Sleeping tabs keep their place in the tab strip and reload when you select them.', [
+          settingRow('Automatically suspend inactive tabs', 'Release background pages to reduce memory use. Your active tab is never suspended.', switchSetting('tab-optimization-enabled-setting', (prefs.tabOptimizations || {}).enabled !== false)),
+          settingRow('Suspend after', 'Normal idle timeout. Memory pressure can shorten this when pressure response is enabled.', selectSetting('tab-idle-minutes-setting', String((prefs.tabOptimizations || {}).idleMinutes ?? 3), [['0', 'Never by idle time'], ['1', '1 minute'], ['2', '2 minutes'], ['3', '3 minutes'], ['5', '5 minutes'], ['10', '10 minutes'], ['15', '15 minutes'], ['30', '30 minutes'], ['60', '60 minutes']])),
+          settingRow('Keep loaded background tabs', 'Maximum number of inactive tabs that retain a live page. Oldest eligible tabs sleep first.', selectSetting('tab-background-cap-setting', String((prefs.tabOptimizations || {}).maxBackgroundLive ?? 4), [['0', 'No limit'], ['1', '1 tab'], ['2', '2 tabs'], ['3', '3 tabs'], ['4', '4 tabs'], ['6', '6 tabs'], ['8', '8 tabs'], ['12', '12 tabs']])),
+          settingRow('New Tab page timeout', 'Lightweight New Tab pages can sleep sooner than regular websites.', selectSetting('tab-newtab-timeout-setting', String((prefs.tabOptimizations || {}).newTabIdleSeconds ?? 20), [['0', 'Use normal idle timeout'], ['10', '10 seconds'], ['20', '20 seconds'], ['30', '30 seconds'], ['60', '1 minute'], ['120', '2 minutes']])),
+          settingRow('Recently used tab grace period', 'A tab used within this time will not be selected by the background-tab limit.', selectSetting('tab-recent-grace-setting', String((prefs.tabOptimizations || {}).recentGraceSeconds ?? 45), [['15', '15 seconds'], ['30', '30 seconds'], ['45', '45 seconds'], ['60', '1 minute'], ['90', '90 seconds'], ['120', '2 minutes'], ['180', '3 minutes']])),
+          settingRow('Memory pressure response', 'Choose whether Drift reacts to low available memory. Aggressive mode releases eligible tabs sooner.', selectSetting('tab-pressure-mode-setting', (prefs.tabOptimizations || {}).pressureMode || 'balanced', [['off', 'Off'], ['balanced', 'Balanced'], ['aggressive', 'Aggressive']]))
+        ].join('')],
+        ['Keep specific websites active', 'Add one domain per line. Matching domains and their subdomains are excluded from automatic suspension.', `<div class="tab-exclusions-editor"><textarea id="tab-exclusions-setting" class="page-input tab-exclusions-input" rows="5" spellcheck="false" placeholder="example.com&#10;docs.example.org">${escapeHtml(((prefs.tabOptimizations || {}).excludedHosts || []).join('\n'))}</textarea><div class="tab-exclusions-footer"><small>Up to 100 domains. Do not include page paths. Current exclusions: ${((prefs.tabOptimizations || {}).excludedHosts || []).length}.</small><button class="small-action primary-action" data-action="save-tab-exclusions">Save site exceptions</button></div></div>`]
       ]
     },
     search: {
@@ -809,17 +1072,44 @@ function renderSettingsContent() {
       ].join('')
     },
     about: {
-      title: 'About Drift Browser', intro: 'Browser build and runtime information.', body: `
-        <div class="about-page-card"><img src="../shared/assets/drift-mark.svg" alt=""><div><strong>Drift Browser ${escapeHtml(state.version || '1.3.0')}</strong><small>A focused browser built for fast, comfortable browsing.</small><small>Electron ${escapeHtml(state.electronVersion || '—')} · Chromium ${escapeHtml(state.chromiumVersion || '—')}</small></div><span class="version-status">Installed build</span></div>
-        <div class="settings-inline-card developer-card"><div class="dev-avatar" aria-hidden="true">Y</div><div><small class="dev-label">Developer</small><strong>Jessie Albert Regualos</strong><small>aka <b>Yotsuchi</b> &middot; designed, built and maintained Drift</small></div></div>
-        <div class="settings-inline-card profile-location-card"><div><strong>Browser profile location</strong><small class="profile-path">${escapeHtml(state.profileDirectory || 'AppData/Drift')}</small><small>Settings, bookmarks, history, session data, and installed extensions are stored here.</small></div><button class="small-action" data-action="open-profile-folder">Open folder</button></div>
-        <p class="page-muted-copy">Drift uses the Chromium engine through Electron. Extensions are copied into your Drift profile so they remain available after the original folder is moved.</p><p class="page-muted-copy">This build is a standalone browser and includes no organization-enrollment or remote-browser-management service. Windows device controls and administrator-enforced policies remain controlled by your device administrator.</p>`
+      bare: true, title: 'About Drift Browser', intro: 'Browser build and runtime information.', body: `
+        <div class="about-layout">
+          <section class="about-hero">
+            <div class="about-hero-mark"><img src="../shared/assets/drift-mark.svg" alt=""></div>
+            <div class="about-hero-text">
+              <h2>Drift Browser <span class="about-version">${escapeHtml(state.version || '1.3.9')}</span></h2>
+              <p>A focused browser built for fast, comfortable browsing.</p>
+              <div class="about-chips"><span class="about-chip">Electron ${escapeHtml(state.electronVersion || '—')}</span><span class="about-chip">Chromium ${escapeHtml(state.chromiumVersion || '—')}</span></div>
+            </div>
+            <span class="version-status">Installed build</span>
+          </section>
+          ${updatePanelMarkup()}
+          <div class="about-grid">
+            <section class="about-panel about-dev">
+              <span class="about-label">Developer</span>
+              <div class="about-dev-row"><div class="dev-avatar" aria-hidden="true">Y</div><div class="about-dev-text"><strong>Jessie Albert Regualos</strong><small>aka <b>Yotsuchi</b> &middot; designed, built and maintained Drift</small></div></div>
+            </section>
+            <section class="about-panel about-profile">
+              <span class="about-label">Browser profile location</span>
+              <div class="about-profile-row"><code class="profile-path">${escapeHtml(state.profileDirectory || 'AppData/Drift')}</code><button class="small-action" data-action="open-profile-folder">Open folder</button></div>
+              <small>Settings, bookmarks, history, session data, and installed extensions are stored here.</small>
+            </section>
+          </div>
+          <section class="about-panel about-review">
+            <span class="about-label">Feedback</span>
+            <div class="about-profile-row"><div class="about-review-copy"><strong>Rate Drift</strong><small>Tell us how Drift is working for you. Takes about a minute and is completely optional.</small></div><button class="small-action primary-action" data-action="open-review">Write a review</button></div>
+          </section>
+          <section class="about-notes">
+            <p>Drift uses the Chromium engine through Electron. Extensions are copied into your Drift profile so they remain available after the original folder is moved.</p>
+            <p>This build is a standalone browser and includes no organization-enrollment or remote-browser-management service. Windows device controls and administrator-enforced policies remain controlled by your device administrator.</p>
+          </section>
+        </div>`
     }
   };
   const section = sections[currentSettingsSection] || sections.general;
   const body = section.cards
     ? section.cards.map(([title, hint, html, cls = '']) => `<section class="settings-group"><div class="group-head"><h2 class="group-title">${title}</h2>${hint ? `<p>${hint}</p>` : ''}</div><div class="page-card settings-card ${cls}">${html}</div></section>`).join('')
-    : `<div class="page-card settings-card">${section.body}</div>`;
+    : (section.bare ? section.body : `<div class="page-card settings-card">${section.body}</div>`);
   $('page-main').innerHTML = `
     <div class="page-heading"><div><span class="eyebrow">PREFERENCES</span><h1>${section.title}</h1><p>${section.intro}</p></div></div>
     ${body}
@@ -835,6 +1125,7 @@ function renderBookmarksPage() {
     <div class="page-card manager-card">
       ${all.length ? all.map((bookmark) => `
         <div class="manager-row bookmark-manager-row" data-bookmark-url="${escapeHtml(bookmark.url)}">
+          <span class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</span>
           <div class="manager-favicon">${escapeHtml((bookmark.title || bookmark.url).charAt(0).toUpperCase())}</div>
           <div class="manager-fields"><input class="manager-title bookmark-title" aria-label="Bookmark title" value="${escapeHtml(bookmark.title || '')}"><input class="manager-url bookmark-url" aria-label="Bookmark URL" value="${escapeHtml(bookmark.url)}"><div class="manager-meta"><input class="bookmark-folder" aria-label="Bookmark folder" placeholder="Folder" value="${escapeHtml(bookmark.folder || '')}">${bookmark.addedAt ? `<span>Added ${formatDate(bookmark.addedAt, false)}</span>` : ''}</div></div>
           <div class="manager-actions"><button class="small-action primary-action" data-action="open-bookmark" data-url="${escapeHtml(bookmark.url)}">Open</button><button class="small-action" data-action="save-bookmark" data-url="${escapeHtml(bookmark.url)}">Save</button><button class="small-action remove-action" data-action="remove-bookmark" data-url="${escapeHtml(bookmark.url)}">Remove</button></div>
@@ -885,21 +1176,22 @@ function pageNavigation() {
     general: '<svg data-fa="sliders"></svg>',
     appearance: '<svg data-fa="palette"></svg>',
     newtab: '<svg data-fa="newtab"></svg>',
+    tabs: '<svg data-fa="tab"></svg>',
     search: '<svg data-fa="search"></svg>',
     privacy: '<svg data-fa="shield"></svg>',
     about: '<svg data-fa="info"></svg>'
   };
   const links = [['settings', 'Settings'], ['bookmarks', 'Bookmarks'], ['history', 'History'], ['downloads', 'Downloads'], ['extensions', 'Extensions']];
-  const settingsLinks = [['general','General'],['appearance','Appearance'],['newtab','New tab'],['search','Search'],['privacy','Privacy'],['downloads','Downloads'],['about','About']];
+  const settingsLinks = [['general','General'],['appearance','Appearance'],['newtab','New tab'],['tabs','Tabs'],['search','Search'],['privacy','Privacy'],['downloads','Downloads'],['about','About']];
   const subnav = state.internalPage === 'settings' ? `<div class="sidebar-caption settings-caption">SETTINGS</div><nav class="page-nav settings-subnav">${settingsLinks.map(([key,label]) => `<button class="page-nav-item setting-nav-item ${currentSettingsSection === key ? 'active' : ''}" data-setting-section="${key}"><span class="page-nav-icon">${icons[key]}</span>${label}</button>`).join('')}</nav>` : '';
   return `<div class="page-sidebar-brand"><img src="../shared/assets/drift-mark.svg" alt=""><div class="brand-lockup"><span class="wm" role="img" aria-label="Drift">Dr<span class="wm-i" aria-hidden="true">ı</span>ft</span><div class="brand-sub"><span>Browser</span></div></div></div>
-    <div class="sidebar-caption">LIBRARY & PREFERENCES</div>
-    <nav class="page-nav">${links.map(([page, label]) => `<button class="page-nav-item ${state.internalPage === page ? 'active' : ''}" data-page="${page}"><span class="page-nav-icon">${icons[page]}</span>${label}</button>`).join('')}</nav>${subnav}
-    <div class="sidebar-bottom"><span class="ver">Drift Browser ${escapeHtml(state.version || '1.3.0')}</span><small>Changes save automatically</small><small class="dev-credit">Made by Jessie Albert Regualos &middot; Yotsuchi</small></div>`;
+    <div class="page-sidebar-scroll"><div class="sidebar-caption">LIBRARY & PREFERENCES</div>
+    <nav class="page-nav">${links.map(([page, label]) => `<button class="page-nav-item ${state.internalPage === page ? 'active' : ''}" data-page="${page}"><span class="page-nav-icon">${icons[page]}</span>${label}</button>`).join('')}</nav>${subnav}</div>
+    <div class="sidebar-bottom"><span class="ver">Drift Browser ${escapeHtml(state.version || '1.3.9')}</span><small>Changes save automatically</small><small class="dev-credit">Made by Jessie Albert Regualos &middot; Yotsuchi</small></div>`;
 }
 function currentPageRenderKey() {
   const page = state.internalPage || '';
-  if (page === 'settings') return JSON.stringify([page, currentSettingsSection, state.settings, state.adBlockEnabled, currentSettingsSection === 'privacy' ? state.blocked : 0, state.canLaunchAtLogin, state.version, state.electronVersion, state.chromiumVersion, state.profileDirectory]);
+  if (page === 'settings') return JSON.stringify([page, currentSettingsSection, state.settings, state.adBlockEnabled, currentSettingsSection === 'privacy' ? state.blocked : 0, state.canLaunchAtLogin, state.version, state.electronVersion, state.chromiumVersion, state.profileDirectory, state.updateStatus, state.canAutoUpdate]);
   if (page === 'bookmarks') return JSON.stringify([page, bookmarkFilter, bookmarkFolderFilter, state.bookmarks]);
   if (page === 'history') return JSON.stringify([page, historyFilter, state.history]);
   if (page === 'downloads') return JSON.stringify([page, state.downloads]);
@@ -1214,16 +1506,39 @@ $('adblock-enabled').addEventListener('change', (event) => drift.manage('adblock
 $('reset-blocked').addEventListener('click', () => drift.manage('adblock:reset-count'));
 $('site-exception-toggle').addEventListener('click', () => { if (state.currentHost) drift.manage('adblock:toggle-site', state.currentHost); });
 document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => closeDialog(button.dataset.close)));
+$('review-form').addEventListener('click', (event) => {
+  const ratingButton = event.target.closest('[data-review-rating]');
+  if (!ratingButton || reviewFormState.busy) return;
+  reviewFormState.rating = Number(ratingButton.dataset.reviewRating);
+  reviewFormState.status = '';
+  reviewFormState.statusType = '';
+  updateReviewFormUI();
+});
+$('review-form').addEventListener('input', (event) => {
+  if (event.target.id === 'review-name') reviewFormState.name = event.target.value.slice(0, 60);
+  if (event.target.id === 'review-message') reviewFormState.message = event.target.value.slice(0, 1500);
+  if (reviewFormState.statusType === 'error') { reviewFormState.status = ''; reviewFormState.statusType = ''; }
+  updateReviewFormUI();
+});
+$('review-form').addEventListener('submit', (event) => { event.preventDefault(); submitReview(); });
+$('review-close').addEventListener('click', () => deferReview('later'));
+$('review-later').addEventListener('click', () => deferReview('later'));
+$('review-never').addEventListener('click', () => deferReview('never'));
+$('reviewDialog').addEventListener('click', (event) => { if (event.target === $('reviewDialog')) deferReview('later'); });
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     if (contextMenu && !contextMenu.classList.contains('hidden')) { closeContextMenu(); return; }
     if (!$('findbar').classList.contains('hidden')) { drift.manage('find:close'); return; }
     const open = visibleDialogs();
-    if (open.length) { event.preventDefault(); closeDialog(open[open.length - 1].id); }
+    if (open.length) {
+      event.preventDefault();
+      if (open[open.length - 1].id === 'reviewDialog') deferReview('later');
+      else closeDialog(open[open.length - 1].id);
+    }
   } else if (event.key === 'Tab') {
     const open = visibleDialogs();
     if (!open.length) return;
-    const focusable = [...open[open.length - 1].querySelectorAll('button:not([disabled]):not(.hidden), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')]
+    const focusable = [...open[open.length - 1].querySelectorAll('button:not([disabled]):not(.hidden), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')]
       .filter((element) => element.offsetParent !== null);
     if (!focusable.length) return;
     const first = focusable[0]; const last = focusable[focusable.length - 1];
@@ -1277,18 +1592,57 @@ $('page-main').addEventListener('change', (event) => {
   else if (id === 'newtab-opens-setting') saveSetting({ newTabOpens: event.target.value });
   else if (id === 'newtab-shortcuts-setting') saveSetting({ newTabShortcuts: event.target.value });
   else if (id === 'newtab-clock-setting') saveSetting({ newTabClock: event.target.checked });
+  else if (id === 'tab-optimization-enabled-setting') saveSetting({ tabOptimizations: { enabled: event.target.checked } });
+  else if (id === 'tab-idle-minutes-setting') saveSetting({ tabOptimizations: { idleMinutes: Number(event.target.value) } });
+  else if (id === 'tab-background-cap-setting') saveSetting({ tabOptimizations: { maxBackgroundLive: Number(event.target.value) } });
+  else if (id === 'tab-newtab-timeout-setting') saveSetting({ tabOptimizations: { newTabIdleSeconds: Number(event.target.value) } });
+  else if (id === 'tab-recent-grace-setting') saveSetting({ tabOptimizations: { recentGraceSeconds: Number(event.target.value) } });
+  else if (id === 'tab-pressure-mode-setting') saveSetting({ tabOptimizations: { pressureMode: event.target.value } });
   else if (id === 'search-setting') saveSetting({ searchEngine: event.target.value });
   else if (id === 'show-bookmarks-setting') saveSetting({ showBookmarksBar: event.target.checked });
+  else if (id === 'appearance-font-family-setting') saveSetting({ appearanceOptions: { fontFamily: event.target.value } });
+  else if (id === 'appearance-font-scale-setting') saveSetting({ appearanceOptions: { fontScale: Number(event.target.value) } });
+  else if (id === 'appearance-density-setting') saveSetting({ appearanceOptions: { density: event.target.value } });
+  else if (id === 'appearance-corners-setting') saveSetting({ appearanceOptions: { cornerStyle: event.target.value } });
+  else if (id === 'appearance-chrome-tint-setting') saveSetting({ appearanceOptions: { chromeTint: event.target.value } });
+  else if (id === 'appearance-tab-style-setting') saveSetting({ appearanceOptions: { tabStyle: event.target.value } });
+  else if (id === 'appearance-tab-width-setting') saveSetting({ appearanceOptions: { tabWidth: event.target.value } });
+  else if (id === 'appearance-bookmark-display-setting') saveSetting({ appearanceOptions: { bookmarkDisplay: event.target.value } });
+  else if (id === 'appearance-motion-setting') saveSetting({ appearanceOptions: { motion: event.target.value } });
+  else if (id === 'appearance-newtab-background-setting') saveSetting({ appearanceOptions: { newTabBackground: event.target.value } });
+  else if (id === 'appearance-newtab-layout-setting') saveSetting({ appearanceOptions: { newTabLayout: event.target.value } });
+  else if (id === 'appearance-newtab-tile-size-setting') saveSetting({ appearanceOptions: { newTabTileSize: event.target.value } });
+  else if (id === 'appearance-accent-setting') {
+    const appearanceOptions = { ...(state.settings?.appearanceOptions || {}), accentColor: event.target.value.toLowerCase() };
+    state.settings = { ...state.settings, appearanceOptions }; applySettings();
+    saveSetting({ appearanceOptions: { accentColor: appearanceOptions.accentColor } });
+  }
   else if (id === 'ask-save-setting') saveSetting({ askWhereToSave: event.target.checked });
   else if (id === 'settings-adblock') drift.manage('adblock:toggle', event.target.checked);
 });
 $('page-main').addEventListener('click', (event) => {
   const sectionLink = event.target.closest('[data-setting-section-link]');
   if (sectionLink) { currentSettingsSection = sectionLink.dataset.settingSectionLink; renderSettingsContent(); $('page-sidebar').innerHTML = pageNavigation(); return; }
+  const resetAccent = event.target.closest('button[data-reset-accent]');
+  if (resetAccent) {
+    const appearanceOptions = { ...(state.settings?.appearanceOptions || {}), accentColor: '' };
+    state.settings = { ...state.settings, appearanceOptions }; applySettings();
+    saveSetting({ appearanceOptions: { accentColor: '' } });
+    const input = $('appearance-accent-setting');
+    const theme = COLOR_THEMES.find((item) => item.id === (state.settings?.colorTheme || 'violet')) || COLOR_THEMES[0];
+    if (input) input.value = theme.primary;
+    return;
+  }
   const themeButton = event.target.closest('button[data-color-theme]'); // not <html>, which also carries data-color-theme
   if (themeButton) {
-    saveSetting({ colorTheme: themeButton.dataset.colorTheme });
+    state.settings = { ...state.settings, colorTheme: themeButton.dataset.colorTheme, appearanceOptions: { ...(state.settings?.appearanceOptions || {}), accentColor: '' } };
+    saveSetting({ colorTheme: themeButton.dataset.colorTheme, appearanceOptions: { accentColor: '' } });
     document.documentElement.dataset.colorTheme = themeButton.dataset.colorTheme;
+    document.documentElement.style.removeProperty('--accent');
+    document.documentElement.style.removeProperty('--accent-strong');
+    document.documentElement.style.removeProperty('--glyph-accent');
+    const accentInput = $('appearance-accent-setting');
+    if (accentInput) accentInput.value = (COLOR_THEMES.find((item) => item.id === themeButton.dataset.colorTheme) || COLOR_THEMES[0]).primary;
     document.querySelectorAll('[data-color-theme]').forEach((button) => {
       const active = button.dataset.colorTheme === themeButton.dataset.colorTheme;
       button.classList.toggle('selected', active);
@@ -1299,6 +1653,10 @@ $('page-main').addEventListener('click', (event) => {
   }
 });
 $('page-main').addEventListener('input', (event) => {
+  if (event.target.id === 'appearance-accent-setting') {
+    const appearanceOptions = { ...(state.settings?.appearanceOptions || {}), accentColor: event.target.value.toLowerCase() };
+    state.settings = { ...state.settings, appearanceOptions }; applySettings();
+  }
   if (event.target.classList?.contains('page-input')) event.target.classList.remove('invalid');
   if (event.target.id === 'bookmark-search') { bookmarkFilter = event.target.value; const start = event.target.selectionStart; renderBookmarksPage(); lastPageRenderKey = currentPageRenderKey(); $('bookmark-search').focus(); $('bookmark-search').setSelectionRange(start, start); }
   if (event.target.id === 'history-search') { historyFilter = event.target.value; const start = event.target.selectionStart; renderHistoryPage(); lastPageRenderKey = currentPageRenderKey(); $('history-search').focus(); $('history-search').setSelectionRange(start, start); }
@@ -1329,6 +1687,22 @@ $('page-main').addEventListener('click', async (event) => {
   if (!button) return;
   const action = button.dataset.action;
   if (action === 'open-protection') openDialog('adblockDialog');
+  else if (action === 'save-tab-exclusions') {
+    const input = $('tab-exclusions-setting');
+    const raw = input?.value || '';
+    const hosts = raw.split(/[\n,;]+/).map((host) => host.trim()).filter(Boolean);
+    const unique = [...new Set(hosts.map((host) => host.toLowerCase()))];
+    const invalid = unique.filter((host) => !/^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(host));
+    if (unique.length > 100 || invalid.length) {
+      input.classList.add('invalid');
+      await showAlert(unique.length > 100 ? 'You can save up to 100 domains.' : `Check these domain entries: ${invalid.slice(0, 5).join(', ')}. Enter domains only, such as example.com.`, 'Invalid site exceptions');
+      input.focus();
+      return;
+    }
+    saveSetting({ tabOptimizations: { excludedHosts: unique } });
+    button.textContent = 'Saved';
+    setTimeout(() => { if (button.isConnected) button.textContent = 'Save site exceptions'; }, 1200);
+  }
   else if (action === 'startup-use-open-tabs') drift.cmd('startup-use-open-tabs');
   else if (action === 'remove-startup-page') {
     const pages = [...(state.settings.startupPages || [])];
@@ -1336,6 +1710,18 @@ $('page-main').addEventListener('click', async (event) => {
     saveSetting({ startupPages: pages });
   }
   else if (action === 'open-profile-folder') drift.cmd('open-profile-folder');
+  else if (action === 'open-review') openReviewManually();
+  else if (action === 'check-updates') {
+    state.updateStatus = { ...(state.updateStatus || {}), phase: 'checking', message: '' }; // instant feedback
+    renderInternalPage(true);
+    const status = await drift.invoke('updates:check').catch((error) => ({ phase: 'error', message: error?.message || 'Unknown error.' }));
+    state.updateStatus = status; renderInternalPage(true);
+  }
+  else if (action === 'install-update') {
+    button.disabled = true; button.textContent = 'Restarting…';
+    const started = await drift.invoke('updates:install').catch(() => false);
+    if (!started) { button.disabled = false; button.textContent = 'Restart to update'; await showAlert('The update could not be started. Try again, or close Drift and reopen it.', 'Couldn’t install update'); }
+  }
   else if (action === 'choose-download-folder') {
     const folder = await drift.invoke('downloads:choose-folder').catch(() => null);
     if (folder) renderInternalPage();
@@ -1512,6 +1898,7 @@ document.addEventListener('keydown', (event) => {
 
 // Render immediately so the browser chrome never flashes an unstyled shell.
 render();
+startReviewPromptChecks();
 
 // Clear browsing data dialog wiring
 document.querySelectorAll('[data-clear-tab]').forEach((tab) => tab.addEventListener('click', () => { clearUi.tab = tab.dataset.clearTab; renderClearData(); }));
@@ -1523,3 +1910,62 @@ $('clear-options').addEventListener('change', (event) => {
   renderClearData();
 });
 $('clear-submit').addEventListener('click', submitClearData);
+
+// ---- Drag to reorder bookmarks (bookmarks bar + Bookmarks page) ---------------
+(() => {
+  let dragUrl = '';
+  const clearMarks = () => document.querySelectorAll('.bm-drop-before, .bm-drop-after').forEach((el) => el.classList.remove('bm-drop-before', 'bm-drop-after'));
+  const commit = (target, after) => {
+    const targetUrl = target.dataset.url || target.dataset.bookmarkUrl;
+    if (!dragUrl || !targetUrl || targetUrl === dragUrl) return;
+    const list = state.bookmarks || [];
+    const from = list.findIndex((b) => b.url === dragUrl);
+    if (from >= 0) { // optimistic local reorder so it feels instant
+      const [item] = list.splice(from, 1);
+      const to = list.findIndex((b) => b.url === targetUrl);
+      list.splice(to < 0 ? from : (after ? to + 1 : to), 0, item);
+      lastBookmarkBarSignature = '';
+      renderBookmarkBar();
+    }
+    drift.manage('bookmark:reorder', dragUrl, targetUrl, after);
+  };
+  const bind = (root, itemSelector, horizontal) => {
+    root.addEventListener('dragstart', (e) => {
+      const item = e.target.closest?.(itemSelector);
+      if (!item || (item.classList.contains('bookmark-manager-row') && !item.draggable)) { return; }
+      dragUrl = item.dataset.url || item.dataset.bookmarkUrl;
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', dragUrl); } catch {}
+      requestAnimationFrame(() => item.classList.add('bm-dragging'));
+    });
+    root.addEventListener('dragover', (e) => {
+      if (!dragUrl) return;
+      const item = e.target.closest?.(itemSelector);
+      if (!item) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+      const r = item.getBoundingClientRect();
+      const after = horizontal ? e.clientX > r.left + r.width / 2 : e.clientY > r.top + r.height / 2;
+      clearMarks();
+      if ((item.dataset.url || item.dataset.bookmarkUrl) !== dragUrl) item.classList.add(after ? 'bm-drop-after' : 'bm-drop-before');
+    });
+    root.addEventListener('drop', (e) => {
+      if (!dragUrl) return;
+      const item = e.target.closest?.(itemSelector);
+      if (!item) return;
+      e.preventDefault();
+      const r = item.getBoundingClientRect();
+      const after = horizontal ? e.clientX > r.left + r.width / 2 : e.clientY > r.top + r.height / 2;
+      clearMarks(); commit(item, after);
+    });
+    root.addEventListener('dragend', () => { dragUrl = ''; clearMarks(); document.querySelectorAll('.bm-dragging').forEach((el) => { el.classList.remove('bm-dragging'); if (el.classList.contains('bookmark-manager-row')) el.draggable = false; }); });
+    root.addEventListener('dragleave', (e) => { if (!root.contains(e.relatedTarget)) clearMarks(); });
+  };
+  bind($('bookmark-items'), '.bookmark-link', true);
+  const pageMain = $('page-main');
+  bind(pageMain, '.bookmark-manager-row', false);
+  // Only the grip starts a row drag, so text inside the row's inputs stays selectable.
+  pageMain.addEventListener('mousedown', (e) => {
+    const row = e.target.closest?.('.bookmark-manager-row');
+    if (row) row.draggable = !!e.target.closest('.drag-handle');
+  });
+})();

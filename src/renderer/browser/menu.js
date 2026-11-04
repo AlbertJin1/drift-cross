@@ -78,6 +78,7 @@ function renderDriftMenu() {
     ${dmRow({ icon: 'sliders', label: 'More tools', sub: 'tools' })}
     ${dmSep()}
     ${dmRow({ icon: 'gear', label: 'Settings', act: 'settings', kbd: 'Ctrl+,', pin: 'settings' })}
+    ${dmRow({ icon: 'star', label: 'Rate Drift', hint: 'Write a review', act: 'review' })}
   `;
 }
 
@@ -231,6 +232,7 @@ function runMenuAction(act, arg) {
     case 'download-open': drift.manage('downloads:action', arg, 'open'); break;
     case 'adblock-toggle': drift.manage('adblock:toggle', !state.adBlockEnabled); break;
     case 'adblock-site': if (state.currentHost) drift.manage('adblock:toggle-site', state.currentHost); break;
+    case 'review': if (typeof openReviewManually === 'function') openReviewManually(); break;
     case 'store-install': if (typeof openDialog === 'function') openDialog('storeInstallDialog'); break;
     default: drift.cmd(act);
   }

@@ -93,6 +93,45 @@
 
   <div id="browser-context-menu" class="browser-context-menu hidden" role="menu" aria-label="Browser context menu"></div>
 
+  <div id="reviewDialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="review-dialog-title" aria-describedby="review-dialog-description">
+    <div class="dialog-panel review-dialog-panel">
+      <div class="dialog-heading review-dialog-heading">
+        <div>
+          <span class="review-dialog-eyebrow">A QUICK PRODUCT REVIEW</span>
+          <h2 id="review-dialog-title">How’s Drift working for you?</h2>
+          <p id="review-dialog-description">Your feedback helps make Drift better. This is optional and only takes a moment.</p>
+        </div>
+        <button id="review-close" class="icon dialog-close" type="button" title="Remind me later" aria-label="Remind me later"><svg data-fa="close"></svg></button>
+      </div>
+      <div class="review-dialog-body">
+        <div class="review-dialog-intro">
+          <span class="review-dialog-mark" aria-hidden="true"><svg data-fa="star"></svg></span>
+          <div><strong>Thanks for spending time with Drift.</strong><p>Share a rating and, if you like, a short note about your experience.</p></div>
+        </div>
+        <form id="review-form" class="review-form" autocomplete="off" novalidate aria-busy="false">
+          <div class="review-rating-block">
+            <div class="review-field-heading"><strong>How would you rate the browser?</strong><span id="review-rating-label">Select a rating</span></div>
+            <div id="review-stars" class="review-stars" role="group" aria-label="Choose a rating from one to five stars">
+              <button type="button" class="review-star" data-review-rating="1" aria-label="1 out of 5 stars — Poor" aria-pressed="false">★</button>
+              <button type="button" class="review-star" data-review-rating="2" aria-label="2 out of 5 stars — Fair" aria-pressed="false">★</button>
+              <button type="button" class="review-star" data-review-rating="3" aria-label="3 out of 5 stars — Good" aria-pressed="false">★</button>
+              <button type="button" class="review-star" data-review-rating="4" aria-label="4 out of 5 stars — Very good" aria-pressed="false">★</button>
+              <button type="button" class="review-star" data-review-rating="5" aria-label="5 out of 5 stars — Excellent" aria-pressed="false">★</button>
+            </div>
+          </div>
+          <label class="review-field" for="review-name"><span>Your name <small>Optional</small></span><input id="review-name" class="page-input" type="text" maxlength="60" placeholder="Anonymous" autocomplete="off"></label>
+          <label class="review-field" for="review-message"><span>Your feedback <small>Optional</small></span><textarea id="review-message" maxlength="1500" rows="4" placeholder="What works well? What could be better?"></textarea><small class="review-counter" id="review-char-count">0/1500</small></label>
+          <div class="review-submit-row"><p id="review-status" class="review-status" role="status" aria-live="polite"></p></div>
+          <div class="review-dialog-privacy"><svg data-fa="shield"></svg><p>Your review is sent securely to the Drift feedback service. Only your rating, optional name, feedback, app version and anonymous installation ID are included. The service may record your network address for abuse prevention. Your tabs, browsing history and visited pages are never sent.</p></div>
+        </form>
+      </div>
+      <div class="dialog-footer review-dialog-footer">
+        <button id="review-never" class="review-never-button" type="button">Don’t ask me again</button>
+        <div class="review-dialog-actions"><button id="review-later" class="secondary-button" type="button">Remind me later</button><button id="review-submit" class="primary-button" type="submit" form="review-form" disabled>Send review</button></div>
+      </div>
+    </div>
+  </div>
+
   <div id="adblockDialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="adblock-title">
     <div class="dialog-panel protection-panel">
       <div class="dialog-heading flex items-center justify-between gap-3"><div><h2 id="adblock-title">Privacy protection</h2><p>Block known advertising and tracking hosts at the network layer.</p></div><button class="icon dialog-close" data-close="adblockDialog" title="Close" aria-label="Close protection settings"><svg data-fa="close"></svg></button></div>

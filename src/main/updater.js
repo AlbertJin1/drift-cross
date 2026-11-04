@@ -159,6 +159,18 @@ function createUpdater(deps) {
   let appliedThisRun = false;
   let supportReason; // undefined = not evaluated yet, null = supported, string = why not
 
+  // What the Settings > About page shows. phase: idle | checking | downloading | ready | up-to-date | error | unsupported
+  const listeners = new Set();
+  let status = { phase: 'idle', version: '', progress: 0, message: '', checkedAt: 0 };
+  let lastEmit = 0;
+  function setStatus(patch, { throttle = false } = {}) {
+    status = { ...status, ...patch };
+    const t = Date.now();
+    if (throttle && t - lastEmit < 400) return;
+    lastEmit = t;
+    for (const fn of listeners) { try { fn({ ...status }); } catch { /* a listener must never break updating */ } }
+  }
+
   // ---------------------------------------------------------------- small helpers
   function log(message) {
     try {
@@ -294,6 +306,7 @@ function createUpdater(deps) {
         if (received > info.size) return callback(new Error('the server sent more data than announced'));
         hash.update(chunk);
         arm();
+        setStatus({ phase: 'downloading', version: info.version, progress: Math.min(1, received / info.size) }, { throttle: true });
         return callback(null, chunk);
       }
     });
@@ -330,11 +343,18 @@ function createUpdater(deps) {
   }
 
   // ---------------------------------------------------------------- check + stage
-  async function checkAndStage() {
+  // manual = the user pressed "Check for updates": it ignores the background-updates switch and a skipped version,
+  // and reports every outcome through the status instead of staying silent.
+  async function checkAndStage({ manual = false } = {}) {
     if (busy) return 'busy';
-    if (supportedReason()) return 'unsupported';
-    if (!isEnabled()) return 'disabled';
+    const unsupported = supportedReason();
+    if (unsupported) {
+      if (manual) setStatus({ phase: 'unsupported', message: unsupported.charAt(0).toUpperCase() + unsupported.slice(1) + '.' });
+      return 'unsupported';
+    }
+    if (!manual && !isEnabled()) return 'disabled';
     busy = true;
+    if (manual) setStatus({ phase: 'checking', progress: 0, message: '' });
     try {
       housekeeping();
       const current = app.getVersion();
@@ -342,20 +362,33 @@ function createUpdater(deps) {
       const info = await fetchLatest(current, state);
       state.lastCheckAt = now();
       saveState(state);
-      if (!info || compareVersions(info.version, current) <= 0) return 'up-to-date';
-      if (state.skipVersion && compareVersions(info.version, state.skipVersion) <= 0) return 'skipped';
+      if (!info || compareVersions(info.version, current) <= 0) {
+        setStatus({ phase: 'up-to-date', version: '', progress: 0, message: '', checkedAt: now() });
+        return 'up-to-date';
+      }
+      if (!manual && state.skipVersion && compareVersions(info.version, state.skipVersion) <= 0) return 'skipped';
+      if (manual && state.skipVersion) { delete state.skipVersion; saveState(state); }
       const pending = readPending();
       if (pending && pending.version === info.version && pending.sha256 === info.sha256) {
-        try { if (fs.statSync(path.join(dir, pending.file)).size === pending.size) return 'staged'; } catch { /* download again */ }
+        try {
+          if (fs.statSync(path.join(dir, pending.file)).size === pending.size) {
+            setStatus({ phase: 'ready', version: info.version, progress: 1, message: '', checkedAt: now() });
+            return 'staged';
+          }
+        } catch { /* download again */ }
       }
-      log(`version ${info.version} is available; downloading in the background`);
+      log(`version ${info.version} is available; downloading${manual ? ' (requested by the user)' : ' in the background'}`);
+      setStatus({ phase: 'downloading', version: info.version, progress: 0, message: '' });
       const file = await download(info);
       writeJson(P.pending, { version: info.version, sha256: info.sha256, size: info.size, file, notes: info.notes, downloadedAt: now(), attempts: 0 });
       discardStaged(file);
       log(`version ${info.version} is downloaded and verified; it installs when Drift closes`);
+      setStatus({ phase: 'ready', version: info.version, progress: 1, message: '', checkedAt: now() });
       return 'staged';
     } catch (error) {
       log(`update check failed: ${error && error.message ? error.message : error}`);
+      const text = error && error.message ? String(error.message) : 'unknown error';
+      if (manual || status.phase === 'checking' || status.phase === 'downloading') setStatus({ phase: 'error', progress: 0, message: text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?]$/.test(text) ? '' : '.') });
       return 'error';
     } finally {
       busy = false;
@@ -373,8 +406,8 @@ function createUpdater(deps) {
 
   // Starts the hidden helper that installs the staged update once this process has exited.
   // relaunch = Drift was started only to apply the update, so the installer opens the browser again afterwards.
-  function applyPending({ relaunch = false } = {}) {
-    if (appliedThisRun || supportedReason() || !isEnabled()) return false;
+  function applyPending({ relaunch = false, force = false } = {}) {
+    if (appliedThisRun || supportedReason() || (!force && !isEnabled())) return false;
     const pending = readPending();
     if (!pending) return false;
     if (compareVersions(pending.version, app.getVersion()) <= 0) { housekeeping(); return false; }
@@ -457,6 +490,8 @@ function createUpdater(deps) {
   function start() {
     if (started) return;
     started = true;
+    const staged = readPending();
+    if (staged && compareVersions(staged.version, app.getVersion()) > 0) setStatus({ phase: 'ready', version: staged.version, progress: 1 });
     app.on('will-quit', () => {
       try { applyPending({ relaunch: false }); } catch (error) { log(`apply on close failed: ${error.message}`); }
     });
@@ -466,6 +501,14 @@ function createUpdater(deps) {
       const { powerMonitor } = require('electron');
       if (powerMonitor && powerMonitor.on) powerMonitor.on('resume', () => { if (isEnabled()) schedule(15 * 1000); });
     } catch { /* not running inside Electron (tests) */ }
+  }
+
+  // "Restart to update": starts the helper (which waits for this process to exit, installs, and opens Drift again).
+  // The caller then quits the app. Returns false when nothing could be started.
+  function installNow() {
+    const pending = readPending();
+    if (!pending || compareVersions(pending.version, app.getVersion()) <= 0) return false;
+    return applyPending({ relaunch: true, force: true });
   }
 
   // Called when the user flips the Settings switch.
@@ -479,6 +522,10 @@ function createUpdater(deps) {
     start,
     prepareStartup,
     checkAndStage,
+    checkNow: () => checkAndStage({ manual: true }),
+    installNow,
+    getStatus: () => ({ ...status }),
+    onStatus(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     applyPending,
     settingsChanged,
     supported: () => supportedReason() === null,

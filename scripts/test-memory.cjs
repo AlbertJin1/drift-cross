@@ -4,7 +4,7 @@
 //   npm run test:memory
 
 const assert = require('node:assert/strict');
-const { planDiscards, measurePressure, DEFAULTS } = require('../src/main/memory-manager.js');
+const { planDiscards, measurePressure, DEFAULTS, normalizeTabOptimizationSettings, discardConfigFromSettings } = require('../src/main/memory-manager.js');
 
 const results = [];
 function test(name, fn) {
@@ -68,6 +68,41 @@ test('high pressure also releases the heaviest idle tabs early, three at most', 
 test('an empty or all-visible list plans nothing', () => {
   assert.deepEqual(plan([]), []);
   assert.deepEqual(plan([tab(1, 99 * MIN, { visible: true })], 2), []);
+});
+
+test('user settings normalize to safe defaults and bounded values', () => {
+  assert.deepEqual(normalizeTabOptimizationSettings({ idleMinutes: 999, maxBackgroundLive: -1, pressureMode: 'unknown' }), {
+    enabled: true, idleMinutes: 3, maxBackgroundLive: 4, newTabIdleSeconds: 20,
+    recentGraceSeconds: 45, pressureMode: 'balanced', excludedHosts: []
+  });
+  assert.deepEqual(normalizeTabOptimizationSettings({ enabled: false, excludedHosts: ['Example.com', '*.docs.example.org', 'https://site.test/path', 'bad host'] }).excludedHosts,
+    ['docs.example.org', 'example.com', 'site.test']);
+});
+test('custom idle timeout and grace period are reflected in discard policy', () => {
+  const c = discardConfigFromSettings({ idleMinutes: 10, recentGraceSeconds: 90, newTabIdleSeconds: 60 });
+  assert.equal(c.idleMs, 10 * MIN);
+  assert.equal(c.capMinIdleMs, 90 * 1000);
+  assert.equal(c.newTabIdleMs, 60 * 1000);
+});
+test('Never by idle time disables normal and pressure-based idle expiry', () => {
+  const c = discardConfigFromSettings({ idleMinutes: 0 });
+  assert.equal(c.idleMs, Infinity);
+  assert.equal(c.idleMsPressure1, Infinity);
+  assert.equal(c.idleMsPressure2, Infinity);
+});
+test('no background-tab cap means the LRU cap is not applied', () => {
+  const tabs = Array.from({ length: 8 }, (_, i) => tab(i + 1, 2 * MIN));
+  assert.deepEqual(plan(tabs, 0, { maxBackgroundLive: 0, idleMs: Infinity }), []);
+});
+test('excluded and protected tabs are never selected for suspension', () => {
+  const tabs = [tab(1, 60 * MIN, { excluded: true }), tab(2, 60 * MIN, { audible: true }), tab(3, 60 * MIN, { busy: true }), tab(4, 60 * MIN)];
+  assert.deepEqual(plan(tabs), [4]);
+});
+test('aggressive pressure policy uses shorter thresholds and a larger release batch', () => {
+  const c = discardConfigFromSettings({ pressureMode: 'aggressive' });
+  assert.equal(c.idleMsPressure1, 45 * 1000);
+  assert.equal(c.idleMsPressure2, 20 * 1000);
+  assert.equal(c.pressureReleasePerPass, 5);
 });
 
 const GB = 1024 * 1024; // in KB

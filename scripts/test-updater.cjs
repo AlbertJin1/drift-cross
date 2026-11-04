@@ -1,4 +1,5 @@
 'use strict';
+const { finish } = require('./test-exit.cjs');
 
 // Exercises src/main/updater.js against a fake Universal App Monitor client gateway (resource=update). No Electron and
 // no Windows needed:   npm run test:updater
@@ -351,12 +352,43 @@ function fixture(server, options = {}) {
     assert.equal(state.requests.length, 0);
   });
 
-  server.close();
+  await test('"Check for updates" works with background updates off, reports progress, then Restart to update installs', async () => {
+    reset();
+    const f = fixture(server);
+    f.flags.enabled = false;
+    const phases = [];
+    f.updater.onStatus((st) => phases.push(st.phase));
+    assert.equal(await f.updater.checkAndStage(), 'disabled'); // the background path still respects the switch
+    assert.equal(state.downloads, 0);
+    assert.equal(await f.updater.checkNow(), 'staged');
+    assert.equal(state.downloads, 1);
+    assert.deepEqual([phases[0], phases[phases.length - 1]], ['checking', 'ready']);
+    assert.ok(phases.includes('downloading'));
+    assert.equal(f.updater.getStatus().phase, 'ready');
+    f.fakeApp.handlers['will-quit'] && f.fakeApp.handlers['will-quit'](); // switch is off: closing alone must not install
+    assert.equal(f.spawned.length, 0);
+    assert.equal(f.updater.installNow(), true);
+    assert.equal(f.spawned.length, 1);
+    assert.match(fs.readFileSync(f.updater.paths.cmd, 'utf8'), /--force-run/); // Drift reopens itself afterwards
+  });
+
+  await test('"Check for updates" says so when Drift is current and when the monitor is unreachable', async () => {
+    reset(); state.withRelease = false;
+    const f = fixture(server);
+    assert.equal(await f.updater.checkNow(), 'up-to-date');
+    assert.equal(f.updater.getStatus().phase, 'up-to-date');
+    assert.equal(f.updater.installNow(), false);
+    state.withRelease = true; state.apiStatus = 500;
+    assert.equal(await f.updater.checkNow(), 'error');
+    assert.equal(f.updater.getStatus().phase, 'error');
+    assert.ok(f.updater.getStatus().message.length > 0);
+  });
+
   let failed = 0;
   for (const [ok, name, error] of results) {
     console.log(`${ok ? 'PASS' : 'FAIL'} ${name}`);
     if (!ok) { failed += 1; console.log(`     ${error && error.stack ? error.stack.split('\n').slice(0, 4).join('\n     ') : error}`); }
   }
   console.log(`\n${results.length - failed}/${results.length} passed`);
-  process.exit(failed ? 1 : 0);
+  await finish(failed, [server]);
 })();
