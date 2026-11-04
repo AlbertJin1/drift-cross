@@ -26,6 +26,9 @@ module.exports = {
   maxInstallAttempts: 3,                   // after this many failed installs of one version, wait for a newer one
   minInstallerBytes: 5 * 1024 * 1024,
   maxInstallerBytes: 1024 * 1024 * 1024,   // sanity limit on the announced installer size
+  maxPackageBytes: 1024 * 1024 * 1024,     // compressed single-entry installer package limit
+  maxManifestBytes: 16 * 1024 * 1024,      // bounded differential manifest before JSON parsing
+  maxDeltaBytes: 1024 * 1024 * 1024,       // bounded compressed changed-chunk response
 
   // Usage reporting (src/main/telemetry.js): the same gateway, resource=telemetry. The monitor treats a device as
   // online for 90 seconds after its last report, so a once-a-minute heartbeat keeps it "open".

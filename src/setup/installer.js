@@ -3,12 +3,17 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 // its own payload, which must be read as plain files, app.asar included.
 const path = require('path'), fs = require('original-fs'), os = require('os');
 const { spawn, execFile } = require('child_process');
+const { spawnDetachedConfirmed } = require('./update-launch');
+const { waitForUpdateHealthcheck } = require('./update-healthcheck');
+const { verifyUserWritableInstallDirectory } = require('./install-path');
+const { waitForProcessExit, writeHelperReadyMarker } = require('./update-helper-runtime');
 
+const APP_USER_MODEL_ID = 'org.drift.browser';
 const KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Drift';
 const RUN = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const isUninstall = process.argv.includes('--uninstall');
 const srcDir = path.dirname(process.execPath); // the extracted app: it IS the payload (no second copy shipped)
-const defaultDir = path.join(process.env.LOCALAPPDATA || os.homedir(), 'Programs', 'Drift');
+const defaultDir = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Drift');
 const startMenu = () => path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
 app.setPath('userData', path.join(os.tmpdir(), 'drift-setup-ui')); // never touch the real Drift profile
 if (isUninstall) process.chdir(os.tmpdir());
@@ -17,13 +22,85 @@ let win;
 const argValue = (name) => { const hit = process.argv.find((a) => a.startsWith(`--${name}=`)); return hit ? hit.slice(name.length + 3) : null; };
 const silentUpdate = process.argv.includes('--silent-update') && !isUninstall;
 const forceRun = process.argv.includes('--force-run');
+const healthcheckFileArg = argValue('healthcheck-file');
+const healthcheckTokenArg = argValue('healthcheck-token');
+const helperReadyFileArg = argValue('helper-ready-file');
+const helperReadyTokenArg = argValue('helper-ready-token');
+const waitPidRaw = argValue('wait-pid');
+const waitPidArg = Number(waitPidRaw || 0);
+const lockFileArg = argValue('lock-file');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
-const run = (cmd, args) => new Promise((res) => execFile(cmd, args, { windowsHide: true }, (e) => res(!e)));
+function writeSetupHelperReadyMarker() {
+  const root = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Drift', 'Updates');
+  return writeHelperReadyMarker(helperReadyFileArg, helperReadyTokenArg, root, fs);
+}
+async function cacheVerifiedSetup(log, appVersion) {
+  const cacheDir = argValue('base-cache-dir');
+  const destination = argValue('base-file');
+  const metadataFile = argValue('base-meta');
+  const version = argValue('base-version');
+  const sha256 = argValue('base-sha256');
+  const size = Number(argValue('base-size') || 0);
+  if (!cacheDir || !destination || !metadataFile || version !== appVersion || !/^[a-f0-9]{64}$/i.test(sha256 || '') || !Number.isSafeInteger(size) || size <= 0) return false;
+  const root = path.resolve(cacheDir) + path.sep;
+  const dest = path.resolve(destination);
+  const meta = path.resolve(metadataFile);
+  if (!dest.startsWith(root) || !meta.startsWith(root)) throw new Error('The differential update cache path is invalid.');
+  const source = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  const stat = fs.statSync(source);
+  if (stat.size !== size) throw new Error('The verified Setup package size changed before it could be cached.');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const temp = `${destination}.tmp-${process.pid}`;
+  const tempMeta = `${metadataFile}.tmp-${process.pid}`;
+  try {
+    await fs.promises.copyFile(source, temp);
+    await fs.promises.rename(temp, destination).catch(async (error) => {
+      if (error.code !== 'EEXIST' && error.code !== 'EPERM') throw error;
+      await fs.promises.rm(destination, { force: true });
+      await fs.promises.rename(temp, destination);
+    });
+    const contents = JSON.stringify({ version, sha256: sha256.toLowerCase(), size, file: path.basename(destination) });
+    await fs.promises.writeFile(tempMeta, contents, 'utf8');
+    await fs.promises.rename(tempMeta, metadataFile).catch(async (error) => {
+      if (error.code !== 'EEXIST' && error.code !== 'EPERM') throw error;
+      await fs.promises.rm(metadataFile, { force: true });
+      await fs.promises.rename(tempMeta, metadataFile);
+    });
+    for (const entry of await fs.promises.readdir(cacheDir, { withFileTypes: true })) {
+      if (entry.isFile() && /^Drift-Setup-.+\.exe$/i.test(entry.name) && path.join(cacheDir, entry.name) !== destination) {
+        await fs.promises.rm(path.join(cacheDir, entry.name), { force: true }).catch(() => {});
+      }
+    }
+    log(`cached verified Setup v${version} as the next differential update base`);
+    return true;
+  } finally {
+    await fs.promises.rm(temp, { force: true }).catch(() => {});
+    await fs.promises.rm(tempMeta, { force: true }).catch(() => {});
+  }
+}
+
+// timeout: a stuck powershell/reg call must never leave the update (and Drift's launch behind it) hanging forever
+const run = (cmd, args, timeout = 20000) => new Promise((res) => execFile(cmd, args, { windowsHide: true, timeout }, (e) => res(!e)));
 const reg = (n, t, v) => run('reg', ['add', KEY, '/v', n, '/t', t, '/d', String(v), '/f']);
 // Close a running *installed* Drift (never this setup process, which is also named Drift.exe)
-const killInstalled = (dir) => run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-  `Get-CimInstance Win32_Process -Filter "Name='Drift.exe'" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith('${dir.replace(/'/g, "''")}\\', 'OrdinalIgnoreCase') -and $_.CommandLine -notmatch '--type=|--uninstall' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F }`]);
+const psQuote = (value) => `'${String(value).replace(/'/g, "''")}'`;
+const killInstalled = async (dir) => {
+  const root = `${path.resolve(dir).replace(/[\\/]+$/, '')}\\`;
+  const command = [
+    `$ErrorActionPreference = 'Stop'`,
+    `$root = ${psQuote(root)}`,
+    '$deadline = [DateTime]::Now.AddSeconds(22)',
+    'do {',
+    `  $procs = @(Get-CimInstance Win32_Process -Filter "Name='Drift.exe'" -ErrorAction Stop | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) })`,
+    '  foreach ($p in $procs) { & taskkill.exe /PID $p.ProcessId /T /F | Out-Null }',
+    '  if ($procs.Count -eq 0) { exit 0 }',
+    '  if ([DateTime]::Now -gt $deadline) { exit 1 }',
+    '  Start-Sleep -Milliseconds 300',
+    '} while ($true)'
+  ].join('\r\n');
+  return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], 25000);
+};
 const copy = (s, d, onBytes) => new Promise((res, rej) => {
   const r = fs.createReadStream(s), w = fs.createWriteStream(d);
   r.on('data', (c) => onBytes(c.length)); r.on('error', rej); w.on('error', rej); w.on('close', res); r.pipe(w);
@@ -31,7 +108,16 @@ const copy = (s, d, onBytes) => new Promise((res, rej) => {
 const walk = (d, out = []) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); e.isDirectory() ? walk(p, out) : out.push(p); } return out; };
 
 app.whenReady().then(() => {
-  if (silentUpdate) { runSilentUpdate(); return; }
+  if (silentUpdate) {
+    try { writeSetupHelperReadyMarker(); }
+    catch (error) {
+      try { fs.appendFileSync(path.join(process.env.APPDATA || os.tmpdir(), 'Drift', 'Updates', 'updater.log'), `[${new Date().toISOString()}] setup helper readiness failed: ${error.message}\n`); } catch {}
+      app.exit(1);
+      return;
+    }
+    runSilentUpdate();
+    return;
+  }
   win = new BrowserWindow({ width: 900, height: 580, frame: false, resizable: false, transparent: true, backgroundColor: '#00000000', hasShadow: false, show: false,
     icon: path.join(__dirname, '..', '..', 'build', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false } });
@@ -41,14 +127,27 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => app.quit());
 
 ipcMain.on('win', (_e, a) => { if (a === 'min') win.minimize(); if (a === 'close') win.close(); });
-ipcMain.handle('browse', async (_e, cur) => { const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], defaultPath: cur }); return r.canceled ? null : path.join(r.filePaths[0], 'Drift'); });
+ipcMain.handle('browse', async (_e, cur) => {
+  const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], defaultPath: path.dirname(cur || defaultDir) });
+  if (r.canceled || !r.filePaths[0]) return null;
+  const candidate = path.join(r.filePaths[0], 'Drift');
+  try { return verifyUserWritableInstallDirectory(candidate, defaultDir); }
+  catch (error) {
+    await dialog.showMessageBox(win, { type: 'warning', title: 'Choose a user-writable folder',
+      message: 'Drift does not use administrator permissions.', detail: error.message, buttons: ['Choose another folder'] });
+    return null;
+  }
+});
 ipcMain.handle('info', () => ({ uninstall: isUninstall, dir: defaultDir, version: app.getVersion() }));
 
 ipcMain.handle('install', async (_e, o) => {
   const send = (pct, phase) => win.webContents.send('progress', { pct, phase });
   try {
     send(2, 'Checking the horizon');
-    await killInstalled(o.dir);
+    // Revalidate the renderer-supplied path at the privileged boundary. The
+    // installer never self-elevates and never writes to Program Files/HKLM.
+    o = { ...o, dir: verifyUserWritableInstallDirectory(o?.dir || defaultDir, defaultDir) };
+    if (!(await killInstalled(o.dir))) throw new Error('Drift is still running or Windows could not close it. Close Drift and retry the installation.');
     const files = walk(srcDir), total = files.reduce((s, f) => s + fs.statSync(f).size, 0) || 1;
     const phases = ['Unfurling the sails', 'Gathering the wind', 'Setting the course', 'Trimming the lines'];
     let done = 0, last = 0;
@@ -59,7 +158,7 @@ ipcMain.handle('install', async (_e, o) => {
     }
     send(88, 'Leaving a trail');
     const exe = path.join(o.dir, 'Drift.exe');
-    const link = (dir) => shell.writeShortcutLink(path.join(dir, 'Drift.lnk'), 'create', { target: exe, cwd: o.dir, icon: exe, description: 'Drift Browser' });
+    const link = (dir) => shell.writeShortcutLink(path.join(dir, 'Drift.lnk'), 'create', { target: exe, cwd: o.dir, icon: exe, description: 'Drift Browser', appUserModelId: APP_USER_MODEL_ID });
     if (o.desktop) link(app.getPath('desktop'));
     if (o.startMenu) link(startMenu());
     await reg('DisplayName', 'REG_SZ', 'Drift Browser'); await reg('DisplayVersion', 'REG_SZ', app.getVersion());
@@ -102,45 +201,165 @@ ipcMain.handle('launch', (_e, p) => {
 // ---------------------------------------------------------------- silent update (no UI)
 // Copies this extracted payload into a side folder first and swaps it in with two renames, so a failure or power
 // cut never leaves a half-updated install: the old folder is kept until the new one is in place.
-const copyRetry = async (s, d, onBytes) => {
+const copyRetry = async (s, d) => {
   for (let attempt = 1; ; attempt++) {
-    try { await copy(s, d, onBytes); return; } catch (e) { if (attempt >= 8) throw e; await sleep(400); }
+    try { await fs.promises.copyFile(s, d); return; } catch (e) { if (attempt >= 8) throw e; await sleep(400); }
   }
+};
+// Several files at a time (thousands of small files dominate the time, not the bytes).
+const copyAll = async (files, mapDest) => {
+  const made = new Set();
+  let next = 0;
+  const worker = async () => {
+    while (next < files.length) {
+      const f = files[next++], dest = mapDest(f), folder = path.dirname(dest);
+      if (!made.has(folder)) { fs.mkdirSync(folder, { recursive: true }); made.add(folder); }
+      await copyRetry(f, dest);
+    }
+  };
+  await Promise.all(Array.from({ length: 8 }, worker));
 };
 const renameRetry = async (from, to) => {
   for (let attempt = 1; ; attempt++) {
     try { fs.renameSync(from, to); return; } catch (e) { if (attempt >= 20) throw e; await sleep(500); } // files may be briefly held by antivirus or a closing process
   }
 };
+const removeDirRetry = async (directory, attempts = 24) => {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try { fs.rmSync(directory, { recursive: true, force: true, maxRetries: 2, retryDelay: 250 }); return; }
+    catch (error) { lastError = error; if (attempt < attempts) await sleep(500); }
+  }
+  throw lastError || new Error(`Could not remove ${directory}.`);
+};
 async function runSilentUpdate() {
-  const logFile = path.join(process.env.APPDATA || os.tmpdir(), 'Drift', 'Updates', 'updater.log');
+  const logFile = argValue('log-file') || path.join(process.env.APPDATA || os.tmpdir(), 'Drift', 'Updates', 'updater.log');
   const log = (m) => { try { fs.mkdirSync(path.dirname(logFile), { recursive: true }); fs.appendFileSync(logFile, `[${new Date().toISOString()}] setup: ${m}\n`); } catch {} };
   const dir = argValue('update-dir');
+  const healthcheckFile = healthcheckFileArg;
+  const healthcheckToken = healthcheckTokenArg;
   const stage = `${dir}.update`, old = `${dir}.old`;
+  let launched = null;
   try {
     if (!dir || path.resolve(dir).toLowerCase() === path.resolve(srcDir).toLowerCase() || !fs.existsSync(path.join(dir, 'Drift.exe'))) throw new Error(`"${dir}" is not an existing Drift install`);
+    if (waitPidRaw !== null && (!Number.isSafeInteger(waitPidArg) || waitPidArg <= 0 || waitPidArg === process.pid)) throw new Error('The update helper received an invalid parent Drift PID.');
+    if (forceRun && (!healthcheckFile || !/^[a-f0-9]{32,64}$/i.test(healthcheckToken || ''))) throw new Error('The update launch health-check parameters are missing or invalid.');
     log(`updating ${dir} to ${app.getVersion()}`);
-    await killInstalled(dir);
-    fs.rmSync(stage, { recursive: true, force: true }); fs.rmSync(old, { recursive: true, force: true });
-    for (const f of walk(srcDir)) {
-      const dest = path.join(stage, path.relative(srcDir, f));
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      await copyRetry(f, dest, () => {});
+    if (waitPidArg) {
+      log(`waiting for the current Drift process ${waitPidArg} to exit normally`);
+      await waitForProcessExit(waitPidArg, { timeoutMs: 180000 });
+      // Allow Electron/Chromium child processes and Windows file handles to close
+      // after the main process has exited. Directory swap retries remain in place.
+      await sleep(900);
+      log(`current Drift process ${waitPidArg} has exited; proceeding without PowerShell`);
+    } else {
+      // Compatibility with earlier releases: their detached launcher already
+      // waits for the old Drift PID before starting Setup. Avoid spawning a
+      // second PowerShell process from this silent update path.
+      await sleep(900);
     }
-    if (!fs.existsSync(path.join(stage, 'Drift.exe'))) throw new Error('the new files are incomplete');
-    await renameRetry(dir, old);
-    try { await renameRetry(stage, dir); } catch (e) { fs.renameSync(old, dir); throw e; } // put the previous version back
+    fs.rmSync(stage, { recursive: true, force: true });
     fs.rmSync(old, { recursive: true, force: true });
-    if (await run('reg', ['query', KEY])) await reg('DisplayVersion', 'REG_SZ', app.getVersion()); // only for installs made by this setup
-    log('update installed');
-    if (forceRun) { // Drift was started only to apply this update, so open the browser again
-      const env = { ...process.env }; delete env.PORTABLE_EXECUTABLE_FILE; delete env.PORTABLE_EXECUTABLE_DIR; delete env.PORTABLE_EXECUTABLE_APP_FILENAME;
-      spawn(path.join(dir, 'Drift.exe'), [], { detached: true, stdio: 'ignore', env, cwd: dir }).unref();
+    const payloadFiles = walk(srcDir);
+    if (!payloadFiles.some((f) => path.basename(f).toLowerCase() === 'drift.exe')
+      || !payloadFiles.some((f) => path.basename(f).toLowerCase() === 'app.asar')) throw new Error('The downloaded Setup payload is incomplete (Drift.exe or resources/app.asar is missing).');
+    await copyAll(payloadFiles, (f) => path.join(stage, path.relative(srcDir, f)));
+    if (!fs.existsSync(path.join(stage, 'Drift.exe')) || !fs.existsSync(path.join(stage, 'resources', 'app.asar'))) throw new Error('The staged application files are incomplete.');
+    await renameRetry(dir, old);
+    try { await renameRetry(stage, dir); }
+    catch (e) { await renameRetry(old, dir); throw e; }
+
+    if (forceRun) {
+      const env = { ...process.env };
+      delete env.PORTABLE_EXECUTABLE_FILE;
+      delete env.PORTABLE_EXECUTABLE_DIR;
+      delete env.PORTABLE_EXECUTABLE_APP_FILENAME;
+      env.DRIFT_UPDATE_HEALTHCHECK_FILE = healthcheckFile;
+      env.DRIFT_UPDATE_HEALTHCHECK_TOKEN = healthcheckToken;
+      env.DRIFT_UPDATE_EXPECTED_VERSION = app.getVersion();
+      try {
+        launched = await spawnDetachedConfirmed(spawn, path.join(dir, 'Drift.exe'), [], {
+          detached: true, stdio: 'ignore', env, cwd: dir, windowsHide: true
+        }, 15000);
+        const result = await waitForUpdateHealthcheck(healthcheckFile, app.getVersion(), healthcheckToken, {
+          timeoutMs: 60000,
+          pollMs: 250,
+          isProcessAlive: () => launched && launched.exitCode === null && launched.signalCode === null
+        });
+        log(`new browser health-check passed for v${result.version}, pid ${result.pid}`);
+      } catch (launchError) {
+        // Only the just-launched process tree is terminated. This avoids PowerShell
+        // and avoids killing a different Drift installation belonging to the user.
+        if (launched && Number.isInteger(launched.pid)) {
+          await run('taskkill.exe', ['/PID', String(launched.pid), '/T', '/F'], 10000);
+          await waitForProcessExit(launched.pid, { timeoutMs: 12000 }).catch(() => {});
+        }
+        await sleep(900);
+        log(`updated Drift did not become ready; restoring previous version: ${launchError.message}`);
+        await removeDirRetry(dir);
+        await renameRetry(old, dir);
+        throw new Error(`The update was rolled back because the new browser did not open successfully (${launchError.message}).`);
+      }
     }
-    app.exit(0);
+
+    if (waitPidArg) {
+      try { await cacheVerifiedSetup(log, app.getVersion()); }
+      catch (cacheError) { log(`differential base cache was not refreshed: ${cacheError.message}`); }
+    }
+
+    // The browser sees an apply lock while this helper is finishing. Setup removes
+    // it only after install/health-check/cache work is complete.
+    try { fs.rmSync(old, { recursive: true, force: true }); }
+    catch (cleanupError) { log(`old-version cleanup will be retried later: ${cleanupError.message}`); }
+    if (await run('reg', ['query', KEY])) await reg('DisplayVersion', 'REG_SZ', app.getVersion());
+    log('update installed' + (forceRun ? ' and new browser startup health-check passed' : ''));
+    setImmediate(() => app.exit(0));
   } catch (e) {
-    log(`update failed: ${e && e.message ? e.message : e}`);
+    const failureMessage = String(e && e.message ? e.message : e).slice(0, 500);
+    log(`update failed: ${failureMessage}`);
+    if (waitPidArg) {
+      try {
+        const pendingFile = argValue('pending-file');
+        if (pendingFile && fs.existsSync(pendingFile)) {
+          const pending = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
+          pending.nextAttemptAt = Date.now() + 15 * 60 * 1000;
+          pending.lastError = failureMessage;
+          const tempPending = `${pendingFile}.tmp-${process.pid}`;
+          fs.writeFileSync(tempPending, JSON.stringify(pending, null, 2));
+          fs.renameSync(tempPending, pendingFile);
+          log('saved a 15-minute retry delay; manual retry remains available');
+        }
+      } catch (stateError) { log(`could not save update retry state: ${stateError.message}`); }
+    }
     try { fs.rmSync(stage, { recursive: true, force: true }); } catch {}
-    app.exit(1);
+    let canRelaunchPrevious = false;
+    try {
+      if (Number.isInteger(launched?.pid)) {
+        await run('taskkill.exe', ['/PID', String(launched.pid), '/T', '/F'], 10000);
+        await waitForProcessExit(launched.pid, { timeoutMs: 12000 }).catch(() => {});
+      }
+      if (fs.existsSync(old)) {
+        if (fs.existsSync(dir)) await removeDirRetry(dir);
+        await renameRetry(old, dir);
+        log('previous Drift installation restored');
+      }
+      canRelaunchPrevious = forceRun && fs.existsSync(path.join(dir, 'Drift.exe'));
+    } catch (rollbackError) { log(`automatic rollback failed: ${rollbackError.message}`); }
+    if (canRelaunchPrevious) {
+      try {
+        const env = { ...process.env };
+        delete env.PORTABLE_EXECUTABLE_FILE; delete env.PORTABLE_EXECUTABLE_DIR; delete env.PORTABLE_EXECUTABLE_APP_FILENAME;
+        const previous = await spawnDetachedConfirmed(spawn, path.join(dir, 'Drift.exe'), [], {
+          detached: true, stdio: 'ignore', env, cwd: dir, windowsHide: true
+        }, 20000);
+        log(`reopened previous Drift after failed update (pid ${previous.pid || 'unknown'})`);
+      } catch (relaunchError) { log(`could not reopen the previous Drift version: ${relaunchError.message}`); }
+    }
+    setImmediate(() => app.exit(1));
+  } finally {
+    // New direct-helper updates own the lock themselves. Legacy PowerShell
+    // callers retain ownership and remove it after this Setup process exits.
+    if (lockFileArg) { try { fs.rmSync(lockFileArg, { force: true }); } catch {} }
+    if (helperReadyFileArg) { try { fs.rmSync(helperReadyFileArg, { force: true }); } catch {} }
   }
 }

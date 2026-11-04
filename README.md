@@ -11,11 +11,12 @@ MIT licensed. Node.js 20+ required to build.
 - **Tabs:** animated tab strip, favicons, loading indicators, reopen closed tabs (last 25), tab hover preview with memory use.
 - **Address bar:** URLs, local addresses and search (DuckDuckGo, Google, Bing, Brave). Command palette on `Ctrl/Cmd+K`.
 - **Page tools:** find in page, reader mode, zoom, print, developer tools, context menus.
-- **Data:** bookmarks with folders and a quick-access bar, persistent history, downloads manager, clear browsing data.
-- **Privacy:** ad and tracker blocking at the request layer, with a global switch and per-site exceptions.
+- **Data:** reorderable bookmarks with folders, real website favicons, a quick-access bar, date-grouped history with site icons, downloads manager, and clear browsing data.
+- **Privacy:** network-level ad/tracker blocking, a separate unsolicited pop-up blocker, a global switch and per-site ad-block exceptions.
 - **Extensions:** Chrome Web Store (Manifest V3) and unpacked extensions.
 - **Customisation:** light, dark or system appearance, eight accent themes plus custom accent colors, interface font and text scale, density, corner style, tab appearance and width, chrome tint, motion controls, bookmark labels, New Tab backgrounds, layouts and tile sizes.
 - **Performance:** idle background tabs are discarded under a memory-aware policy, tab creation is lazy, and disk writes are coalesced and atomic.
+- **Updates:** Windows releases use verified incremental binary-chunk updates when a compatible base installer is cached, with compressed ZIP and raw-installer fallbacks.
 
 ## Keyboard shortcuts
 
@@ -63,19 +64,21 @@ Build each target on its own operating system.
 | macOS | `./scripts/build_publish.sh` | `.dmg` |
 | Linux | `./scripts/build_publish.sh` | `.AppImage` |
 
-On Windows the build makes **one file, `Drift-Setup.exe`**: the custom Setup window (`src/setup`) with the Drift app packed inside it. There is no separate download and no GitHub step. It is a per-user install that needs no administrator rights. Program files go to `%LOCALAPPDATA%\Programs\Drift`; the profile lives in `%APPDATA%\Drift` and is kept on uninstall. `publish/` contains the Setup, a SHA-256 checksum and a release manifest.
+On Windows the build makes **one file, `Drift-Setup.exe`**: the custom Setup window (`src/setup`) with the Drift app packed inside it. There is no separate download and no GitHub step. It is a per-user install that needs no administrator rights. Setup tests the selected folder for current-user write access and refuses protected folders instead of requesting UAC elevation. Program files go to `%LOCALAPPDATA%\Programs\Drift`; the profile lives in `%APPDATA%\Drift` and is kept on uninstall. `publish/` contains the Setup, a SHA-256 checksum and a release manifest.
 
 Preview the Setup window without building: `npx electron . --setup`.
 
 ## Updates
 
-Windows installs update from the Universal App Monitor (the same gateway that receives usage reports).
+Windows installs update from the Universal App Monitor (the same gateway that receives usage reports). Drift uses **incremental installer updates** when a compatible, previously verified Setup package is cached:
 
-1. Drift asks the monitor for the latest Drift release about 20 seconds after launch and every six hours (with retries after a failure and after waking from sleep). The request carries the install ID, Drift version, PC name and LAN address, so the monitor shows one row per PC.
-2. A newer `Drift-Setup.exe` is downloaded from the monitor and rejected unless its size and SHA-256 match what the monitor announced.
-3. The Setup runs headless (`--silent-update`) when Drift closes, or at the next launch if that did not happen. The profile is never touched.
+1. Drift checks the latest release about 20 seconds after launch and every six hours (with retries after failures and after waking from sleep). The request carries the install ID, Drift version, PC name and LAN address, so the monitor shows one row per PC.
+2. When the Monitor publishes a `psd-chunks-v1` manifest and Drift has a verified base installer from the currently installed version, Drift downloads only the content-defined chunks that are not already present in that base. It reconstructs the new `Drift-Setup.exe` locally and verifies each chunk and the complete executable with SHA-256.
+3. If no compatible base exists, the release has no delta manifest, the delta is unavailable or invalid, or the delta would be larger than the compressed package, Drift downloads the Monitor's compressed one-file ZIP package instead. If ZIP metadata or extraction fails, it falls back to the raw installer. All paths verify the announced size and SHA-256 before staging.
+4. After a successful install, the detached helper caches the verified Setup executable as the base for the next release. The first update after installing 1.3.13 will generally use the compressed full package because existing installations do not yet have a cached base; subsequent compatible updates can be incremental.
+5. The updater launches the SHA-256-verified staged `Drift-Setup.exe` directly as a detached, hidden helper (no PowerShell dependency). Setup confirms its Electron runtime is ready, waits for the current Drift PID to exit normally, then performs a staged directory swap. For **Restart to update**, the new browser must load its chrome, show its main window, and write a one-time version/token health-check before Setup commits and removes the previous install. If the check fails, Setup rolls back, reopens the previous browser, and delays automatic retry; the profile is never touched. Earlier releases that already launched Setup through PowerShell remain compatible.
 
-Updates are skipped on macOS and Linux, in development runs, and when the install folder requires administrator rights. They can be disabled in **Settings > General > Keep Drift up to date**. Log: `%APPDATA%\Drift\Updates\updater.log`.
+Updates are skipped on macOS and Linux, in development runs, and when the install folder requires administrator rights. They can be disabled in **Settings > General > Keep Drift up to date**. Logs: `%APPDATA%\Drift\Updates\updater.log` and `%APPDATA%\Drift\startup.log`.
 
 To publish: bump `version` in `package.json`, add a `## <version>` section to `CHANGELOG.md` (it becomes the release notes), then run **`release.bat`**. It builds `publish\Drift-Setup.exe`, checks that the version inside the exe, `package.json` and `CHANGELOG.md` agree, and uploads it to the monitor (`publish_to_monitor.ps1`: LAN first, public tunnel as fallback, resumable chunks, SHA-256 verified).
 
@@ -86,7 +89,7 @@ release.bat noupload        build and validate only
 
 The Monitor API key comes from `DRIFT_MONITOR_KEY` (or `MONITOR_API_KEY`), a `monitor-key.txt` next to the script (git-ignored), or a prompt. It is never stored in the app. New users can run the same `Drift-Setup.exe`.
 
-Configuration: `src/main/update-config.js` (gateway address, `DRIFT_UPDATE_GATEWAY` overrides it for testing). Tests: `npm run test:updater`, `npm run test:gateway`.
+Configuration: `src/main/update-config.js` (gateway address and artifact size/time limits; `DRIFT_UPDATE_GATEWAY` overrides the gateway for testing). Tests: `npm run test:updater`, `npm run test:update-healthcheck`, `npm run test:installer-launch`, `npm run test:differential`, `npm run test:gateway`.
 
 ## Usage reporting
 
@@ -157,3 +160,10 @@ Tests: `npm run test:review-prompt`.
 ### Tab optimization (1.3.8)
 
 Open Settings > Appearance to customize the browser palette, typography, density, corners, tab strip, motion and New Tab design. Settings > Tabs lets you tune inactive-tab suspension, background renderer limits, memory-pressure behavior, New Tab expiry, recent-tab protection, and domains that should remain loaded. Visible, audible, captured, and downloading tabs are always protected.
+
+
+## Recently closed tabs and windows
+
+Use **Ctrl+Shift+T** (or **Cmd+Shift+T** on macOS) to restore the most recently closed tab or an entire closed Drift browser window. The recovery list is saved locally, so a closed browser session can be restored after relaunch. Repeated presses step backward through the closed history.
+
+Drift installs per-user by default and validates that the selected install directory is writable without administrator privileges.

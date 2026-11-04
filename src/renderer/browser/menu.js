@@ -98,9 +98,14 @@ function flyBuild(kind) {
     case 'history':
       return [
         dmRow({ icon: 'history', label: 'Show full history', act: 'history', kbd: 'Ctrl+H' }),
-        dmRow({ icon: 'restore', label: 'Reopen closed tab', act: 'reopen-tab', kbd: 'Ctrl+Shift+T', disabled: !(d.closedTabs || []).length, pin: 'reopen-tab' }),
+        dmRow({ icon: 'restore', label: 'Restore last closed tab or window', act: 'reopen-tab', kbd: 'Ctrl+Shift+T', disabled: !(d.closedTabs || []).length, pin: 'reopen-tab' }),
         dmRow({ icon: 'close', label: 'Clear browsing data…', act: 'clear-data', pin: 'clear-data' }),
-        (d.closedTabs || []).length ? dmSep() + dmHead('Recently closed') + d.closedTabs.map((c) => link(c)).join('') : '',
+        (d.closedTabs || []).length ? dmSep() + dmHead('Recently closed') + d.closedTabs.map((c) => dmRow({
+          icon: 'restore',
+          label: c.type === 'window' ? `Restore window · ${c.tabCount} tabs` : (c.title || c.url || 'Restore tab'),
+          hint: c.type === 'window' ? `Active tab: ${c.activeTitle || 'Last active page'}` : dmHost(c.url),
+          act: 'reopen-entry', arg: c.id
+        })).join('') : '',
         dmSep(), dmHead('Recently visited'),
         (d.history || []).length ? d.history.map((h) => link(h)).join('') : empty('No history yet')
       ].join('');
@@ -229,12 +234,13 @@ function runMenuAction(act, arg) {
   closeDriftMenu();
   switch (act) {
     case 'open-url': if (arg) drift.cmd('new', arg); break;
+    case 'reopen-entry': drift.cmd('reopen-entry', arg); break;
     case 'download-open': drift.manage('downloads:action', arg, 'open'); break;
     case 'adblock-toggle': drift.manage('adblock:toggle', !state.adBlockEnabled); break;
     case 'adblock-site': if (state.currentHost) drift.manage('adblock:toggle-site', state.currentHost); break;
     case 'review': if (typeof openReviewManually === 'function') openReviewManually(); break;
     case 'store-install': if (typeof openDialog === 'function') openDialog('storeInstallDialog'); break;
-    default: drift.cmd(act);
+    default: drift.cmd(act, arg);
   }
 }
 

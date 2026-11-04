@@ -14,6 +14,9 @@ const fail = (message) => {
 if (pkg.name !== 'drift') fail(`Unexpected package name: ${pkg.name}`);
 if (pkg.build?.appId !== 'org.drift.browser') fail('The stable application ID must remain org.drift.browser.');
 if (pkg.build?.productName !== 'Drift') fail('The packaged product name must remain Drift.');
+const browserMain = fs.readFileSync(path.join(root, 'src/main/main.js'), 'utf8');
+const setupMain = fs.readFileSync(path.join(root, 'src/setup/installer.js'), 'utf8');
+if (!browserMain.includes(`const APP_USER_MODEL_ID = '${pkg.build.appId}'`) || !setupMain.includes(`const APP_USER_MODEL_ID = '${pkg.build.appId}'`) || !setupMain.includes('appUserModelId: APP_USER_MODEL_ID')) fail('The browser process and Start Menu/Desktop shortcuts must share the stable Windows AppUserModelID.');
 
 const setupConfigFile = path.join(root, 'electron-builder.setup.json');
 if (!fs.existsSync(setupConfigFile)) fail('electron-builder.setup.json (the all-in-one Setup build) is missing.');
@@ -23,8 +26,9 @@ else {
   if (setupConfig.productName !== 'Drift') fail('electron-builder.setup.json must keep the product name Drift.');
   if (setupConfig.extraMetadata?.main !== 'src/setup/entry.js') fail('electron-builder.setup.json must start src/setup/entry.js.');
   if (!(setupConfig.win?.target || []).includes('portable')) fail('electron-builder.setup.json must build the portable Setup.');
+  if (setupConfig.portable?.requestExecutionLevel !== 'user') fail('The Windows portable installer must run at current-user level and never request administrator access.');
 }
-for (const relative of ['src/setup/entry.js', 'src/setup/installer.js', 'src/setup/preload.js', 'src/setup/index.html']) {
+for (const relative of ['src/setup/entry.js', 'src/setup/installer.js', 'src/setup/install-path.js', 'src/setup/preload.js', 'src/setup/index.html']) {
   if (!fs.existsSync(path.join(root, relative))) fail(`Setup file is missing: ${relative}`);
 }
 // Updates come from the monitor, never GitHub: the updater must not carry a repository configuration again.
@@ -39,6 +43,10 @@ for (const relative of [
   'src/main/extension-info.js',
   'src/main/shortcuts.js',
   'src/main/updater.js',
+  'src/main/update-helper.js',
+  'src/main/update-healthcheck.js',
+  'src/setup/update-helper-runtime.js',
+  'src/main/differential-update.js',
   'src/main/telemetry.js',
   'src/main/reviews.js',
   'src/main/review-prompt.js',
@@ -46,7 +54,9 @@ for (const relative of [
   'src/main/storage.js',
   'src/main/memory-manager.js',
   'src/main/appearance-settings.js',
+  'src/main/recently-closed.js',
   'src/renderer/browser/ui.js',
+  'src/renderer/browser/responsive.js',
   'src/renderer/newtab/newtab.js',
   'src/renderer/palette/palette.js',
   'scripts/build_icons.cjs',
@@ -60,6 +70,10 @@ const syntaxFiles = [
   'src/main/extension-info.js',
   'src/main/shortcuts.js',
   'src/main/updater.js',
+  'src/main/update-helper.js',
+  'src/main/update-healthcheck.js',
+  'src/setup/update-helper-runtime.js',
+  'src/main/differential-update.js',
   'src/main/monitor-gateway.js',
   'src/main/telemetry.js',
   'src/main/reviews.js',
@@ -68,16 +82,28 @@ const syntaxFiles = [
   'src/main/storage.js',
   'src/main/memory-manager.js',
   'src/main/appearance-settings.js',
+  'src/main/recently-closed.js',
   'src/setup/entry.js',
   'src/setup/installer.js',
+  'src/setup/install-path.js',
   'src/setup/preload.js',
+  'src/setup/update-launch.js',
+  'src/setup/update-healthcheck.js',
+  'src/setup/update-helper-runtime.js',
   'src/preload/preload.js',
   'src/renderer/browser/ui.js',
+  'src/renderer/browser/responsive.js',
   'src/renderer/newtab/newtab.js',
   'src/renderer/palette/palette.js',
   'scripts/build_icons.cjs',
   'scripts/test-reviews.cjs',
   'scripts/test-review-prompt.cjs',
+  'scripts/test-installer-launch.cjs',
+  'scripts/test-responsive-ui.cjs',
+  'scripts/test-differential-update.cjs',
+  'scripts/test-bookmark-bar.cjs',
+  'scripts/test-update-healthcheck.cjs',
+  'scripts/test-update-helper-runtime.cjs',
   'scripts/test-memory.cjs',
 ];
 for (const relative of syntaxFiles) {

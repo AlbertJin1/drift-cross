@@ -44,7 +44,7 @@ tbOverflow.addEventListener('click', (event) => {
 const bmOverflow = $('bookmarks-overflow');
 function layoutBookmarksBar() {
   const box = $('bookmark-items');
-  if (!box || document.body.classList.contains('hide-bookmarks')) return;
+  if (!box || document.body.classList.contains('hide-bookmarks') || document.body.classList.contains('bookmark-reordering')) return;
   const links = Array.from(box.querySelectorAll('.bookmark-link'));
   links.forEach((link) => link.classList.remove('bm-hidden'));
   bmOverflow.classList.add('hidden');

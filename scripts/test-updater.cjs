@@ -1,5 +1,6 @@
 'use strict';
 const { finish } = require('./test-exit.cjs');
+const { EventEmitter } = require('node:events');
 
 // Exercises src/main/updater.js against a fake Universal App Monitor client gateway (resource=update). No Electron and
 // no Windows needed:   npm run test:updater
@@ -78,7 +79,22 @@ function fixture(server, options = {}) {
     force: true,
     execPath: path.join(installDir, 'Drift.exe'),
     fetch: (url, init) => fetch(url, init),
-    spawn: (...args) => { spawned.push(args); return { on() {}, unref() {} }; },
+    spawn: options.spawn || ((...args) => {
+      spawned.push(args);
+      const child = new EventEmitter();
+      child.pid = 9000 + spawned.length;
+      child.exitCode = null;
+      child.signalCode = null;
+      child.unref = () => {};
+      setImmediate(() => {
+        child.emit('spawn');
+        const argv = args[1] || [];
+        const token = argv.find((value) => value.startsWith('--helper-ready-token='))?.slice('--helper-ready-token='.length);
+        const readyFile = argv.find((value) => value.startsWith('--helper-ready-file='))?.slice('--helper-ready-file='.length);
+        if (token && readyFile) { fs.mkdirSync(path.dirname(readyFile), { recursive: true }); fs.writeFileSync(readyFile, token); }
+      });
+      return child;
+    }),
     isEnabled: () => flags.enabled,
     applyWaitMs: 3000,
     config: testConfig(server)
@@ -98,21 +114,28 @@ function fixture(server, options = {}) {
     assert.equal(compareVersions('1.3.1-beta', '1.3.1'), null);
   });
 
-  await test('helper script: waits for the PID, runs the installer silently, escapes percent signs, refuses quotes', () => {
-    const script = buildApplyScript({ pid: 4242, installer: 'C:\\Users\\A 100%\\Updates\\Drift-Setup-1.4.0.exe', installDir: 'C:\\Drift', exe: 'C:\\Drift\\Drift.exe', lock: 'L', pending: 'P', log: 'G', relaunch: false });
-    assert.match(script, /set "DRIFT_PID=4242"/);
-    assert.match(script, /A 100%%\\Updates/);
-    assert.match(script, /tasklist \/FI "PID eq %DRIFT_PID%"/);
-    assert.match(script, /start "" \/wait "%INSTALLER%" \/S --updated --silent-update "--update-dir=%INSTALL_DIR%"\r\n/);
-    assert.ok(!script.includes('--force-run'));
-    assert.ok(!script.includes('start "" "%DRIFT_EXE%"'));
-    assert.ok(script.indexOf('del /f /q "%PENDING%"') < script.lastIndexOf('del /f /q "%LOCK%"'), 'lock must be removed last');
-    const startup = buildApplyScript({ pid: 1, installer: 'I', installDir: 'D', exe: 'E', lock: 'L', pending: 'P', log: 'G', relaunch: true });
-    assert.match(startup, /--force-run/);
-    assert.match(startup, /start "" "%DRIFT_EXE%"/);
-    assert.throws(() => buildApplyScript({ pid: 1, installer: 'a"b', installDir: 'D', exe: 'E', lock: 'L', pending: 'P', log: 'G' }));
+  await test('legacy PowerShell helper remains compatible with the tokenized Setup health-check', () => {
+    const script = buildApplyScript({
+      pid: 4242, installer: 'C:\\Users\\A 100%\\Updates\\Drift-Setup-1.4.0.exe', installDir: 'C:\\Drift',
+      exe: 'C:\\Drift\\Drift.exe', lock: 'L', pending: 'P', log: 'G', readyFile: 'R', readyToken: 'a'.repeat(48),
+      healthcheckFile: 'H', healthcheckToken: 'b'.repeat(48), relaunch: true
+    });
+    assert.match(script, /\$DriftPid = 4242/);
+    assert.match(script, /A 100%\\Updates/);
+    assert.match(script, /Get-CimInstance Win32_Process/);
+    assert.match(script, /\[System\.Diagnostics\.Process\]::Start/);
+    assert.match(script, /--silent-update/);
+    assert.match(script, /--force-run/);
+    assert.match(script, /--healthcheck-file=H/);
+    assert.match(script, /\$ReadyToken = 'a{48}'/);
+    assert.match(script, /Remove-Item -LiteralPath \$LockFile/);
+    assert.match(script, /exit \$ExitCode/);
+    assert.ok(script.lastIndexOf('exit $ExitCode') > script.indexOf('} finally {'), 'helper exits only after lock cleanup');
+    assert.ok(script.indexOf('Remove-Item -LiteralPath $PendingFile') < script.lastIndexOf('Remove-Item -LiteralPath $LockFile'), 'lock must be removed last');
+    const noRelaunch = buildApplyScript({ pid: 1, installer: 'I', installDir: 'D', exe: 'E', lock: 'L', pending: 'P', log: 'G', readyFile: 'R', readyToken: 'c'.repeat(48) });
+    assert.ok(!noRelaunch.includes('--force-run'));
+    assert.throws(() => buildApplyScript({ pid: 1, installer: 'I', installDir: 'D', exe: 'E', lock: 'L', pending: 'P', log: 'G' }));
   });
-
   await test('check asks the monitor, then downloads, verifies and stages; a second check does not download again', async () => {
     reset();
     const f = fixture(server);
@@ -227,15 +250,14 @@ function fixture(server, options = {}) {
     f.fakeApp.handlers['will-quit']();
     assert.equal(f.spawned.length, 1);
     const [command, args, options] = f.spawned[0];
-    assert.equal(command, 'conhost.exe');
-    assert.deepEqual(args.slice(0, 5), ['--headless', 'cmd.exe', '/d', '/s', '/c']);
-    assert.equal(args[5], `""${f.updater.paths.cmd}""`);
+    assert.match(command, /Drift-Setup-1\.4\.0\.exe$/);
+    assert.ok(args.includes('--silent-update'));
+    assert.ok(args.includes(`--wait-pid=${process.pid}`));
+    assert.ok(args.some((value) => value.startsWith('--helper-ready-file=')));
+    assert.ok(!args.includes('--force-run'));
     assert.equal(options.detached, true);
     assert.equal(options.windowsHide, true);
-    assert.notEqual(path.resolve(options.cwd), path.resolve(f.installDir), 'helper must not sit inside the install folder');
-    const script = fs.readFileSync(f.updater.paths.cmd, 'utf8');
-    assert.match(script, new RegExp(`DRIFT_PID=${process.pid}`));
-    assert.ok(!script.includes('--force-run'));
+    assert.notEqual(path.resolve(options.cwd), path.resolve(f.installDir), 'helper must run outside the install folder');
     assert.ok(fs.existsSync(f.updater.paths.lock));
     assert.equal(JSON.parse(fs.readFileSync(f.updater.paths.pending, 'utf8')).attempts, 1);
     f.fakeApp.handlers['will-quit'](); // a second quit event must not launch a second installer
@@ -260,14 +282,26 @@ function fixture(server, options = {}) {
     await f.updater.checkAndStage();
     const restarted = createUpdater({ // a fresh updater over the same profile, as after a restart
       app: f.fakeApp, force: true, execPath: path.join(f.installDir, 'Drift.exe'), fetch, isEnabled: () => true, applyWaitMs: 3000,
-      spawn: (...args) => { f.spawned.push(args); return { on() {}, unref() {} }; },
+      spawn: (...args) => {
+        f.spawned.push(args);
+        const child = new EventEmitter(); child.pid = 9100 + f.spawned.length; child.exitCode = null; child.signalCode = null; child.unref = () => {};
+        setImmediate(() => {
+          child.emit('spawn');
+          const argv = args[1] || [];
+          const token = argv.find((value) => value.startsWith('--helper-ready-token='))?.slice('--helper-ready-token='.length);
+          const readyFile = argv.find((value) => value.startsWith('--helper-ready-file='))?.slice('--helper-ready-file='.length);
+          if (token && readyFile) { fs.mkdirSync(path.dirname(readyFile), { recursive: true }); fs.writeFileSync(readyFile, token); }
+        });
+        return child;
+      },
       config: testConfig(server)
     });
     assert.equal(await restarted.prepareStartup(), 'exit');
     assert.equal(f.spawned.length, 1);
-    const script = fs.readFileSync(f.updater.paths.cmd, 'utf8');
-    assert.match(script, /--force-run/);
-    assert.match(script, /start "" "%DRIFT_EXE%"/);
+    const args = f.spawned[0][1];
+    assert.ok(args.includes('--force-run'));
+    assert.ok(args.some((value) => value.startsWith('--healthcheck-token=')));
+    assert.ok(args.includes(`--wait-pid=${process.pid}`));
   });
 
   await test('a launch that finds nothing staged simply continues', async () => {
@@ -284,6 +318,38 @@ function fixture(server, options = {}) {
     fs.writeFileSync(f.updater.paths.lock, JSON.stringify({ startedAt: Date.now(), version: '1.4.0' }));
     setTimeout(() => fs.rmSync(f.updater.paths.lock, { force: true }), 700);
     assert.equal(await f.updater.prepareStartup(), 'restart');
+  });
+
+  await test('the relaunched, already-updated Drift does not wait for the installer that is still cleaning up', async () => {
+    reset();
+    const f = fixture(server, { version: '1.4.0' });
+    fs.mkdirSync(path.dirname(f.updater.paths.lock), { recursive: true });
+    fs.writeFileSync(f.updater.paths.lock, JSON.stringify({ startedAt: Date.now(), version: '1.4.0', helperPid: process.pid }));
+    const began = Date.now();
+    assert.equal(await f.updater.prepareStartup(), 'continue');
+    assert.ok(Date.now() - began < 1000, 'must not wait');
+  });
+
+  await test('a lock whose helper process is gone is dropped immediately, even if it is recent', async () => {
+    reset();
+    const f = fixture(server);
+    fs.mkdirSync(path.dirname(f.updater.paths.lock), { recursive: true });
+    fs.writeFileSync(f.updater.paths.lock, JSON.stringify({ startedAt: Date.now(), version: '1.4.0', helperPid: 2147483646 }));
+    const began = Date.now();
+    assert.equal(await f.updater.prepareStartup(), 'continue');
+    assert.ok(Date.now() - began < 1000);
+    assert.ok(!fs.existsSync(f.updater.paths.lock));
+  });
+
+  await test('a launch that has to wait tells the caller (so a splash can be shown)', async () => {
+    reset();
+    const f = fixture(server);
+    fs.mkdirSync(path.dirname(f.updater.paths.lock), { recursive: true });
+    fs.writeFileSync(f.updater.paths.lock, JSON.stringify({ startedAt: Date.now(), version: '1.4.0', helperPid: process.pid }));
+    setTimeout(() => fs.rmSync(f.updater.paths.lock, { force: true }), 500);
+    let waited = 0;
+    assert.equal(await f.updater.prepareStartup({ onWait: () => { waited += 1; } }), 'restart');
+    assert.equal(waited, 1);
   });
 
   await test('an abandoned lock does not block startup', async () => {
@@ -367,9 +433,42 @@ function fixture(server, options = {}) {
     assert.equal(f.updater.getStatus().phase, 'ready');
     f.fakeApp.handlers['will-quit'] && f.fakeApp.handlers['will-quit'](); // switch is off: closing alone must not install
     assert.equal(f.spawned.length, 0);
-    assert.equal(f.updater.installNow(), true);
+    assert.equal(await f.updater.installNow(), true);
     assert.equal(f.spawned.length, 1);
-    assert.match(fs.readFileSync(f.updater.paths.cmd, 'utf8'), /--force-run/); // Drift reopens itself afterwards
+    assert.match(f.spawned[0][0], /Drift-Setup-1\.4\.0\.exe$/);
+    assert.ok(f.spawned[0][1].includes('--silent-update'));
+    assert.ok(f.spawned[0][1].includes(`--wait-pid=${process.pid}`));
+    assert.ok(f.spawned[0][1].includes('--force-run')); // Setup reopens Drift after the browser health-check
+    assert.ok(f.spawned[0][1].some((value) => value.startsWith('--helper-ready-token=')));
+  });
+
+  await test('manual update does not quit unless Windows confirms a helper started', async () => {
+    reset();
+    const failingSpawn = (...args) => {
+      const child = new EventEmitter();
+      setImmediate(() => child.emit('error', new Error(`simulated ${args[0]} launch failure`)));
+      return child;
+    };
+    const f = fixture(server, { spawn: failingSpawn });
+    await f.updater.checkNow();
+    assert.equal(await f.updater.installNow(), false);
+    assert.equal(f.updater.getStatus().phase, 'ready');
+    assert.match(f.updater.getStatus().message, /Drift is still open/);
+    assert.ok(fs.existsSync(f.updater.paths.pending), 'keep the downloaded installer so the user can retry');
+    assert.ok(!fs.existsSync(f.updater.paths.lock), 'do not leave an orphan apply lock');
+    assert.equal(JSON.parse(fs.readFileSync(f.updater.paths.pending, 'utf8')).attempts, 0, 'a helper that never started is not an install attempt');
+  });
+
+  await test('startup verifies a staged installer asynchronously before launching the helper', async () => {
+    reset();
+    const f = fixture(server);
+    await f.updater.checkAndStage();
+    const started = await f.updater.prepareStartup();
+    assert.equal(started, 'exit');
+    assert.equal(f.spawned.length, 1);
+    const lock = JSON.parse(fs.readFileSync(f.updater.paths.lock, 'utf8'));
+    assert.equal(lock.version, '1.4.0');
+    assert.ok(Number.isInteger(lock.helperPid));
   });
 
   await test('"Check for updates" says so when Drift is current and when the monitor is unreachable', async () => {
@@ -377,7 +476,7 @@ function fixture(server, options = {}) {
     const f = fixture(server);
     assert.equal(await f.updater.checkNow(), 'up-to-date');
     assert.equal(f.updater.getStatus().phase, 'up-to-date');
-    assert.equal(f.updater.installNow(), false);
+    assert.equal(await f.updater.installNow(), false);
     state.withRelease = true; state.apiStatus = 500;
     assert.equal(await f.updater.checkNow(), 'error');
     assert.equal(f.updater.getStatus().phase, 'error');

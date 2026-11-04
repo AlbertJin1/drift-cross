@@ -1,9 +1,9 @@
 const $ = (id) => document.getElementById(id);
 let state = {
   tabs: [], url: '', internalPage: '', bookmarks: [], history: [], downloads: [], extensions: [],
-  blockedHosts: [], blocked: 0, adBlockEnabled: true,
+  blockedHosts: [], blocked: 0, blockedPopups: 0, adBlockEnabled: true, popupBlockEnabled: true,
   settings: { appearance: 'system', colorTheme: 'violet', appearanceOptions: { accentColor: '', density: 'comfortable', fontScale: 100, fontFamily: 'system', cornerStyle: 'soft', tabStyle: 'underline', tabWidth: 'balanced', motion: 'full', chromeTint: 'balanced', bookmarkDisplay: 'labels', newTabBackground: 'aurora', newTabLayout: 'centered', newTabTileSize: 'medium' }, searchEngine: 'duckduckgo', startupMode: 'newtab', startupPages: [], homepage: '', showHomeButton: false, newTabOpens: 'newtab', newTabShortcuts: 'smart', newTabClock: true, windowStart: 'default', launchAtLogin: false, showBookmarksBar: true, askWhereToSave: false, tabOptimizations: { enabled: true, idleMinutes: 3, maxBackgroundLive: 4, newTabIdleSeconds: 20, recentGraceSeconds: 45, pressureMode: 'balanced', excludedHosts: [] } },
-  version: '1.3.9', find: { visible: false, activeMatchOrdinal: 0, matches: 0 }
+  version: '1.3.17', find: { visible: false, activeMatchOrdinal: 0, matches: 0 }
 };
 document.body.classList.toggle('is-windows', drift.platform === 'win32');
 const tabEls = new Map();
@@ -53,6 +53,38 @@ function formatDate(value, withTime = true) {
   return date.toLocaleString([], withTime ? { dateStyle: 'medium', timeStyle: 'short' } : { dateStyle: 'medium' });
 }
 function isCompleted(download) { return ['completed', 'cancelled', 'interrupted'].includes(download.state); }
+function faviconCandidates(value, saved = '') {
+  try {
+    const url = new URL(String(value || ''));
+    if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) return { primary: '', site: '', remote: '' };
+    const site = `${url.origin}/favicon.ico`;
+    const remote = `https://www.google.com/s2/favicons?sz=64&domain_url=${encodeURIComponent(url.origin)}`;
+    const primary = /^https?:/i.test(saved || '') ? saved : site;
+    return { primary, site: primary === site ? remote : site, remote };
+  } catch { return { primary: '', site: '', remote: '' }; }
+}
+function bookmarkIconMarkup(bookmark, className = 'bookmark-mark') {
+  const letter = (bookmark?.title || bookmark?.url || '•').trim().charAt(0).toUpperCase() || '•';
+  const icons = faviconCandidates(bookmark?.url, bookmark?.favicon);
+  return `<span class="${className}" data-letter="${escapeHtml(letter)}">${icons.primary ? `<img class="site-favicon" src="${escapeHtml(icons.primary)}" data-fallback-src="${escapeHtml(icons.site)}" data-final-src="${escapeHtml(icons.remote)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false">` : escapeHtml(letter)}</span>`;
+}
+function historyDayLabel(timestamp) {
+  const date = new Date(Number(timestamp) || 0);
+  if (!Number.isFinite(date.getTime()) || !Number(timestamp)) return 'Unknown date';
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const day = new Date(date); day.setHours(0, 0, 0, 0);
+  const delta = Math.round((today.getTime() - day.getTime()) / 86400000);
+  if (delta === 0) return 'Today';
+  if (delta === 1) return 'Yesterday';
+  return date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: date.getFullYear() !== today.getFullYear() ? 'numeric' : undefined });
+}
+function historyTime(timestamp) {
+  const date = new Date(Number(timestamp) || 0);
+  return Number.isFinite(date.getTime()) ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
+}
+function historyHost(value) {
+  try { return new URL(value).hostname.replace(/^www\./i, ''); } catch { return ''; }
+}
 
 // ---- Tab strip ------------------------------------------------------------
 // Every tab shares one width (--tab-w) computed in JS from the space actually
@@ -628,11 +660,12 @@ window.addEventListener('resize', () => { if (TL.open) positionTabList(); });
 function makeBookmarkButton(bookmark) {
   const button = document.createElement('button');
   button.className = 'bookmark-link';
-  button.draggable = true;
+  button.draggable = false;
   button.dataset.url = bookmark.url;
   button.title = `${bookmark.title || bookmark.url}\n${bookmark.url}`;
   button.addEventListener('click', () => drift.cmd('go', bookmark.url));
-  const mark = document.createElement('span'); mark.className = 'bookmark-mark'; mark.textContent = (bookmark.title || bookmark.url || '•').trim().charAt(0).toUpperCase();
+  const iconWrap = document.createElement('span'); iconWrap.innerHTML = bookmarkIconMarkup(bookmark);
+  const mark = iconWrap.firstElementChild;
   const label = document.createElement('span'); label.className = 'bookmark-label'; label.textContent = bookmark.title || bookmark.url;
   button.append(mark, label);
   return button;
@@ -657,7 +690,9 @@ function renderBookmarkBar() {
 function renderProtection() {
   const enabled = !!state.adBlockEnabled;
   $('adblock-enabled').checked = enabled;
+  if ($('popupblock-enabled')) $('popupblock-enabled').checked = state.popupBlockEnabled !== false;
   $('blocked-total').textContent = Number(state.blocked || 0).toLocaleString();
+  if ($('blocked-popups-total')) $('blocked-popups-total').textContent = Number(state.blockedPopups || 0).toLocaleString();
   $('blocked').textContent = Number(state.blocked || 0).toLocaleString();
   $('protection').classList.toggle('disabled', !enabled);
   $('protection').classList.toggle('site-paused', !!state.siteAllowed);
@@ -683,6 +718,20 @@ function renderProtection() {
     }));
   }
 }
+
+
+// Favicon chain: use Chromium's saved page icon first, then the site's /favicon.ico,
+// then Google's domain favicon proxy; finally fall back to the bookmark's initial.
+document.addEventListener('error', (event) => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement) || !image.classList.contains('site-favicon')) return;
+  const fallback = image.dataset.fallbackSrc || '';
+  const final = image.dataset.finalSrc || '';
+  if (fallback && image.src !== fallback) { image.src = fallback; image.dataset.fallbackSrc = final; return; }
+  if (final && image.src !== final) { image.src = final; image.dataset.fallbackSrc = ''; image.dataset.finalSrc = ''; return; }
+  const parent = image.parentElement;
+  if (parent) parent.textContent = parent.dataset.letter || '?';
+}, true);
 
 function darkenHex(hex, amount = 0.22) {
   const value = String(hex || '').replace('#', '');
@@ -727,7 +776,7 @@ function applySettings() {
   document.body.classList.toggle('hide-bookmarks', preferences.showBookmarksBar === false);
   const isWindows = drift.platform === 'win32';
   document.documentElement.style.setProperty('--chrome-height', `${preferences.showBookmarksBar === false ? 82 : 120}px`);
-  if ($('window-version')) $('window-version').textContent = (state.version || '1.3.9').split('.').slice(0, 2).join('.');
+  if ($('window-version')) $('window-version').textContent = (state.version || '1.3.17').split('.').slice(0, 2).join('.');
   if ($('win-maximize')) {
     if (lastMaximizedState !== !!state.isMaximized) {
       lastMaximizedState = !!state.isMaximized;
@@ -963,13 +1012,20 @@ function updatePanelMarkup() {
   const busy = u.phase === 'checking' || u.phase === 'downloading';
   let line = 'Drift looks for updates in the background. You can also check now.';
   let button = '<button class="small-action primary-action" data-action="check-updates">Check for updates</button>';
-  if (u.phase === 'checking') { line = 'Checking for updates…'; button = '<button class="small-action" disabled>Checking…</button>'; }
+  if (u.phase === 'checking') { line = escapeHtml(u.message || 'Checking for updates…'); button = '<button class="small-action" disabled>Checking…</button>'; }
   else if (u.phase === 'downloading') {
     const pct = Math.round(Math.max(0, Math.min(1, u.progress || 0)) * 100);
-    line = `Downloading Drift ${escapeHtml(u.version || '')}… ${pct}%`;
+    line = `${escapeHtml(u.message || `Downloading Drift ${u.version || ''}…`)} ${pct}%`;
     button = '<button class="small-action" disabled>Downloading…</button>';
   }
-  else if (u.phase === 'ready') { line = `Drift ${escapeHtml(u.version || '')} is ready. Restart Drift to finish updating — your tabs come back.`; button = '<button class="small-action primary-action" data-action="install-update">Restart to update</button>'; }
+  else if (u.phase === 'installing') {
+    line = escapeHtml(u.message || `Preparing Drift ${u.version || ''} for restart…`);
+    button = '<button class="small-action" disabled>Preparing…</button>';
+  }
+  else if (u.phase === 'ready') {
+    line = u.message ? escapeHtml(u.message) : `${escapeHtml(u.summary || `Drift ${u.version || ''} is ready.`)} Restart Drift to finish updating — your tabs come back.`;
+    button = `<button class="small-action primary-action" data-action="install-update">${u.message ? 'Try update again' : 'Restart to update'}</button>`;
+  }
   else if (u.phase === 'up-to-date') line = `You’re up to date — Drift ${escapeHtml(state.version || '')} is the latest version.`;
   else if (u.phase === 'error') line = `Couldn’t check for updates. ${escapeHtml(u.message || '')}`;
   else if (u.phase === 'unsupported') { line = escapeHtml(u.message || 'Automatic updates are not available for this install.'); }
@@ -1060,9 +1116,10 @@ function renderSettingsContent() {
     },
     privacy: {
       title: 'Privacy and security', intro: 'Manage built-in protection and site exceptions.', body: [
-        settingRow('Block ads and trackers', 'Filter a bundled list of common advertising and analytics hosts.', switchSetting('settings-adblock', state.adBlockEnabled !== false)),
+        settingRow('Block ads and trackers', 'Filter known advertising, analytics, and tracking hosts at the network layer.', switchSetting('settings-adblock', state.adBlockEnabled !== false)),
+        settingRow('Block unsolicited pop-ups', 'Block script-opened pop-ups without a recent click or keyboard action. User-initiated links still open in a new tab.', switchSetting('settings-popupblock', state.popupBlockEnabled !== false)),
         `<div class="settings-inline-card"><div><strong>Clear browsing data</strong><small>Delete history, cookies, cached files and more for a chosen time range.</small></div><button class="small-action" data-action="clear-data">Clear data…</button></div>`,
-        `<div class="settings-inline-card"><div><strong>Site exceptions and activity</strong><small>${Number(state.blocked || 0).toLocaleString()} requests blocked this session</small></div><button class="small-action" data-action="open-protection">Manage protection</button></div>`
+        `<div class="settings-inline-card"><div><strong>Site exceptions and activity</strong><small>${Number(state.blocked || 0).toLocaleString()} requests blocked · ${Number(state.blockedPopups || 0).toLocaleString()} pop-ups blocked this session</small></div><button class="small-action" data-action="open-protection">Manage protection</button></div>`
       ].join('')
     },
     downloads: {
@@ -1077,7 +1134,7 @@ function renderSettingsContent() {
           <section class="about-hero">
             <div class="about-hero-mark"><img src="../shared/assets/drift-mark.svg" alt=""></div>
             <div class="about-hero-text">
-              <h2>Drift Browser <span class="about-version">${escapeHtml(state.version || '1.3.9')}</span></h2>
+              <h2>Drift Browser <span class="about-version">${escapeHtml(state.version || '1.3.17')}</span></h2>
               <p>A focused browser built for fast, comfortable browsing.</p>
               <div class="about-chips"><span class="about-chip">Electron ${escapeHtml(state.electronVersion || '—')}</span><span class="about-chip">Chromium ${escapeHtml(state.chromiumVersion || '—')}</span></div>
             </div>
@@ -1125,10 +1182,10 @@ function renderBookmarksPage() {
     <div class="page-card manager-card">
       ${all.length ? all.map((bookmark) => `
         <div class="manager-row bookmark-manager-row" data-bookmark-url="${escapeHtml(bookmark.url)}">
-          <span class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</span>
-          <div class="manager-favicon">${escapeHtml((bookmark.title || bookmark.url).charAt(0).toUpperCase())}</div>
+          <span class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder" role="button" tabindex="0">⋮⋮</span>
+          ${bookmarkIconMarkup(bookmark, 'manager-favicon')}
           <div class="manager-fields"><input class="manager-title bookmark-title" aria-label="Bookmark title" value="${escapeHtml(bookmark.title || '')}"><input class="manager-url bookmark-url" aria-label="Bookmark URL" value="${escapeHtml(bookmark.url)}"><div class="manager-meta"><input class="bookmark-folder" aria-label="Bookmark folder" placeholder="Folder" value="${escapeHtml(bookmark.folder || '')}">${bookmark.addedAt ? `<span>Added ${formatDate(bookmark.addedAt, false)}</span>` : ''}</div></div>
-          <div class="manager-actions"><button class="small-action primary-action" data-action="open-bookmark" data-url="${escapeHtml(bookmark.url)}">Open</button><button class="small-action" data-action="save-bookmark" data-url="${escapeHtml(bookmark.url)}">Save</button><button class="small-action remove-action" data-action="remove-bookmark" data-url="${escapeHtml(bookmark.url)}">Remove</button></div>
+          <div class="manager-actions"><button class="small-action bookmark-move" data-action="bookmark-move-up" data-url="${escapeHtml(bookmark.url)}" title="Move up" aria-label="Move bookmark up" ${state.bookmarks.findIndex((item) => item.url === bookmark.url) <= 0 ? 'disabled' : ''}>↑</button><button class="small-action bookmark-move" data-action="bookmark-move-down" data-url="${escapeHtml(bookmark.url)}" title="Move down" aria-label="Move bookmark down" ${state.bookmarks.findIndex((item) => item.url === bookmark.url) >= state.bookmarks.length - 1 ? 'disabled' : ''}>↓</button><button class="small-action primary-action" data-action="open-bookmark" data-url="${escapeHtml(bookmark.url)}">Open</button><button class="small-action" data-action="save-bookmark" data-url="${escapeHtml(bookmark.url)}">Save</button><button class="small-action remove-action" data-action="remove-bookmark" data-url="${escapeHtml(bookmark.url)}">Remove</button></div>
         </div>`).join('') : `<div class="empty-state"><div class="empty-state-icon">${STAR_SVG}</div><strong>${bookmarkFilter ? 'No matching bookmarks' : 'No bookmarks yet'}</strong><span>${bookmarkFilter ? 'Try a different search.' : 'Use the star in the address bar or add a bookmark here.'}</span></div>`}
     </div>
     <div class="page-footnote">${folders.length ? `Folders: ${folders.map(escapeHtml).join(' · ')}` : 'Tip: enter a folder name while saving to organize your bookmarks.'}</div>`;
@@ -1137,12 +1194,27 @@ function renderBookmarksPage() {
 }
 function renderHistoryPage() {
   const history = (state.history || []).filter((entry) => `${entry.title} ${entry.url}`.toLowerCase().includes(historyFilter.toLowerCase()));
+  const groups = new Map();
+  for (const entry of history) {
+    const label = historyDayLabel(entry.visitedAt);
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(entry);
+  }
+  const groupMarkup = [...groups.entries()].map(([label, entries]) => `
+    <section class="history-day-group"><div class="history-day-heading"><strong>${escapeHtml(label)}</strong><span>${entries.length} ${entries.length === 1 ? 'visit' : 'visits'}</span></div>
+    ${entries.map((entry) => `
+      <div class="manager-row history-manager-row" data-history-id="${escapeHtml(entry.id || '')}">
+        ${bookmarkIconMarkup({ title: entry.title || entry.url, url: entry.url, favicon: entry.favicon }, 'manager-favicon history-favicon')}
+        <div class="manager-fields"><strong>${escapeHtml(entry.title || entry.url)}</strong><span class="manager-url-text">${escapeHtml(entry.url)}</span><div class="manager-meta"><span>${escapeHtml(historyHost(entry.url))}</span><span>${escapeHtml(historyTime(entry.visitedAt))}</span></div></div>
+        <div class="manager-actions"><button class="small-action primary-action" data-action="open-history" data-url="${escapeHtml(entry.url)}">Open</button><button class="small-action remove-action" data-action="remove-history" data-id="${escapeHtml(entry.id || '')}" title="Remove this visit">Remove</button></div>
+      </div>`).join('')}
+    </section>`).join('');
   $('page-main').innerHTML = `
-    <div class="page-heading page-heading-row"><div><span class="eyebrow">YOUR ACTIVITY</span><h1>History</h1><p>Pages you have visited in Drift.</p></div><button class="secondary-button" data-action="clear-history" ${(state.history || []).length ? '' : 'disabled'}>Clear history</button></div>
-    <div class="page-toolbar"><div class="page-search"><svg data-fa="search"></svg><input id="history-search" value="${escapeHtml(historyFilter)}" placeholder="Search history"></div><span class="toolbar-count">${history.length} visits</span></div>
-    <div class="page-card manager-card">${history.length ? history.map((entry) => `
-      <div class="manager-row history-manager-row"><div class="history-date">${escapeHtml(formatDate(entry.visitedAt || 0))}</div><div class="manager-fields"><strong>${escapeHtml(entry.title || entry.url)}</strong><span class="manager-url-text">${escapeHtml(entry.url)}</span></div><div class="manager-actions"><button class="small-action primary-action" data-action="open-history" data-url="${escapeHtml(entry.url)}">Open</button><button class="small-action remove-action" data-action="remove-history" data-id="${escapeHtml(entry.id || '')}" title="Remove this visit">Remove</button></div></div>`).join('') : `<div class="empty-state"><div class="empty-state-icon"><svg data-fa="history"></svg></div><strong>${historyFilter ? 'No matching pages' : 'Your history is empty'}</strong><span>${historyFilter ? 'Try a different search.' : 'Pages you visit will appear here.'}</span></div>`}</div>`;
+    <div class="page-heading page-heading-row"><div><span class="eyebrow">YOUR ACTIVITY</span><h1>History</h1><p>Search and revisit pages from your browsing activity.</p></div><button class="secondary-button" data-action="clear-history" ${(state.history || []).length ? '' : 'disabled'}>Clear history</button></div>
+    <div class="page-toolbar"><div class="page-search"><svg data-fa="search"></svg><input id="history-search" value="${escapeHtml(historyFilter)}" placeholder="Search titles and web addresses"><button class="history-search-clear" type="button" data-action="clear-history-search" title="Clear search" aria-label="Clear search" ${historyFilter ? '' : 'disabled'}>×</button></div><span class="toolbar-count">${history.length} ${history.length === 1 ? 'visit' : 'visits'}</span></div>
+    <div class="history-groups page-card manager-card">${history.length ? groupMarkup : `<div class="empty-state"><div class="empty-state-icon"><svg data-fa="history"></svg></div><strong>${historyFilter ? 'No matching pages' : 'Your history is empty'}</strong><span>${historyFilter ? 'Try a different search.' : 'Pages you visit will appear here, grouped by day.'}</span></div>`}</div>`;
 }
+
 function renderDownloadsPage() {
   const downloads = state.downloads || [];
   $('page-main').innerHTML = `
@@ -1187,11 +1259,11 @@ function pageNavigation() {
   return `<div class="page-sidebar-brand"><img src="../shared/assets/drift-mark.svg" alt=""><div class="brand-lockup"><span class="wm" role="img" aria-label="Drift">Dr<span class="wm-i" aria-hidden="true">ı</span>ft</span><div class="brand-sub"><span>Browser</span></div></div></div>
     <div class="page-sidebar-scroll"><div class="sidebar-caption">LIBRARY & PREFERENCES</div>
     <nav class="page-nav">${links.map(([page, label]) => `<button class="page-nav-item ${state.internalPage === page ? 'active' : ''}" data-page="${page}"><span class="page-nav-icon">${icons[page]}</span>${label}</button>`).join('')}</nav>${subnav}</div>
-    <div class="sidebar-bottom"><span class="ver">Drift Browser ${escapeHtml(state.version || '1.3.9')}</span><small>Changes save automatically</small><small class="dev-credit">Made by Jessie Albert Regualos &middot; Yotsuchi</small></div>`;
+    <div class="sidebar-bottom"><span class="ver">Drift Browser ${escapeHtml(state.version || '1.3.17')}</span><small>Changes save automatically</small><small class="dev-credit">Made by Jessie Albert Regualos &middot; Yotsuchi</small></div>`;
 }
 function currentPageRenderKey() {
   const page = state.internalPage || '';
-  if (page === 'settings') return JSON.stringify([page, currentSettingsSection, state.settings, state.adBlockEnabled, currentSettingsSection === 'privacy' ? state.blocked : 0, state.canLaunchAtLogin, state.version, state.electronVersion, state.chromiumVersion, state.profileDirectory, state.updateStatus, state.canAutoUpdate]);
+  if (page === 'settings') return JSON.stringify([page, currentSettingsSection, state.settings, state.adBlockEnabled, state.popupBlockEnabled, currentSettingsSection === 'privacy' ? state.blocked : 0, currentSettingsSection === 'privacy' ? state.blockedPopups : 0, state.canLaunchAtLogin, state.version, state.electronVersion, state.chromiumVersion, state.profileDirectory, state.updateStatus, state.canAutoUpdate]);
   if (page === 'bookmarks') return JSON.stringify([page, bookmarkFilter, bookmarkFolderFilter, state.bookmarks]);
   if (page === 'history') return JSON.stringify([page, historyFilter, state.history]);
   if (page === 'downloads') return JSON.stringify([page, state.downloads]);
@@ -1503,6 +1575,7 @@ $('win-minimize').addEventListener('click', () => drift.windowAction('minimize')
 $('win-maximize').addEventListener('click', () => drift.windowAction('maximize'));
 $('win-close').addEventListener('click', () => drift.windowAction('close'));
 $('adblock-enabled').addEventListener('change', (event) => drift.manage('adblock:toggle', event.target.checked));
+if ($('popupblock-enabled')) $('popupblock-enabled').addEventListener('change', (event) => drift.manage('popup-block:toggle', event.target.checked));
 $('reset-blocked').addEventListener('click', () => drift.manage('adblock:reset-count'));
 $('site-exception-toggle').addEventListener('click', () => { if (state.currentHost) drift.manage('adblock:toggle-site', state.currentHost); });
 document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => closeDialog(button.dataset.close)));
@@ -1619,6 +1692,7 @@ $('page-main').addEventListener('change', (event) => {
   }
   else if (id === 'ask-save-setting') saveSetting({ askWhereToSave: event.target.checked });
   else if (id === 'settings-adblock') drift.manage('adblock:toggle', event.target.checked);
+  else if (id === 'settings-popupblock') drift.manage('popup-block:toggle', event.target.checked);
 });
 $('page-main').addEventListener('click', (event) => {
   const sectionLink = event.target.closest('[data-setting-section-link]');
@@ -1718,9 +1792,16 @@ $('page-main').addEventListener('click', async (event) => {
     state.updateStatus = status; renderInternalPage(true);
   }
   else if (action === 'install-update') {
-    button.disabled = true; button.textContent = 'Restarting…';
-    const started = await drift.invoke('updates:install').catch(() => false);
-    if (!started) { button.disabled = false; button.textContent = 'Restart to update'; await showAlert('The update could not be started. Try again, or close Drift and reopen it.', 'Couldn’t install update'); }
+    button.disabled = true; button.textContent = 'Starting Setup…';
+    const result = await drift.invoke('updates:install').catch((error) => ({ ok: false, message: error?.message || 'The update request could not reach Drift.' }));
+    const started = result === true || result?.ok === true;
+    if (!started) {
+      const message = String(result?.message || 'Drift Setup could not start. The downloaded update has been kept and is safe to retry.');
+      state.updateStatus = { ...(state.updateStatus || {}), phase: 'ready', message };
+      button.disabled = false; button.textContent = 'Try update again';
+      renderInternalPage(true);
+      await showAlert(message, 'Couldn’t start the update');
+    }
   }
   else if (action === 'choose-download-folder') {
     const folder = await drift.invoke('downloads:choose-folder').catch(() => null);
@@ -1746,11 +1827,15 @@ $('page-main').addEventListener('click', async (event) => {
     if (result?.error) await showAlert(result.error, 'Couldn’t remove extension');
   } else if (action === 'clear-history') {
     openClearData({ types: ['history'] });
+  } else if (action === 'clear-history-search') {
+    historyFilter = ''; renderHistoryPage(); lastPageRenderKey = currentPageRenderKey();
   } else if (action === 'clear-data') {
     openClearData();
   } else if (action === 'remove-history') drift.manage('history:remove', button.dataset.id);
   else if (action === 'open-history' || action === 'open-bookmark') drift.cmd('new', button.dataset.url);
   else if (action === 'remove-bookmark') drift.manage('bookmark:remove', button.dataset.url);
+  else if (action === 'bookmark-move-up') drift.manage('bookmark:move', button.dataset.url, -1);
+  else if (action === 'bookmark-move-down') drift.manage('bookmark:move', button.dataset.url, 1);
   else if (action === 'save-bookmark') {
     const row = button.closest('.bookmark-manager-row');
     const title = row.querySelector('.bookmark-title').value.trim();
@@ -1911,61 +1996,177 @@ $('clear-options').addEventListener('change', (event) => {
 });
 $('clear-submit').addEventListener('click', submitClearData);
 
-// ---- Drag to reorder bookmarks (bookmarks bar + Bookmarks page) ---------------
+// ---- Pointer-driven bookmark reorder with live drag preview + insertion slot ----
 (() => {
-  let dragUrl = '';
+  let drag = null;
+  let suppressBookmarkClickUntil = 0;
   const clearMarks = () => document.querySelectorAll('.bm-drop-before, .bm-drop-after').forEach((el) => el.classList.remove('bm-drop-before', 'bm-drop-after'));
-  const commit = (target, after) => {
-    const targetUrl = target.dataset.url || target.dataset.bookmarkUrl;
-    if (!dragUrl || !targetUrl || targetUrl === dragUrl) return;
-    const list = state.bookmarks || [];
-    const from = list.findIndex((b) => b.url === dragUrl);
-    if (from >= 0) { // optimistic local reorder so it feels instant
-      const [item] = list.splice(from, 1);
-      const to = list.findIndex((b) => b.url === targetUrl);
-      list.splice(to < 0 ? from : (after ? to + 1 : to), 0, item);
-      lastBookmarkBarSignature = '';
-      renderBookmarkBar();
+  const itemUrl = (item) => item?.dataset.url || item?.dataset.bookmarkUrl || '';
+  const visibleItems = (root, selector) => Array.from(root.querySelectorAll(selector)).filter((item) => !item.classList.contains('bm-hidden'));
+
+  function targetAt(root, selector, horizontal, x, y, source) {
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || !root.contains(hit)) return null;
+    const hitItem = hit.closest?.(selector) || null;
+    if (hitItem === source) return null;
+    if (hitItem && root.contains(hitItem) && !hitItem.classList.contains('bm-hidden')) {
+      const rect = hitItem.getBoundingClientRect();
+      return { item: hitItem, after: horizontal ? x > rect.left + rect.width / 2 : y > rect.top + rect.height / 2 };
     }
-    drift.manage('bookmark:reorder', dragUrl, targetUrl, after);
-  };
-  const bind = (root, itemSelector, horizontal) => {
-    root.addEventListener('dragstart', (e) => {
-      const item = e.target.closest?.(itemSelector);
-      if (!item || (item.classList.contains('bookmark-manager-row') && !item.draggable)) { return; }
-      dragUrl = item.dataset.url || item.dataset.bookmarkUrl;
-      e.dataTransfer.effectAllowed = 'move';
-      try { e.dataTransfer.setData('text/plain', dragUrl); } catch {}
-      requestAnimationFrame(() => item.classList.add('bm-dragging'));
+    // Resolve the flex gaps and card gutters by the nearest item center.
+    const items = visibleItems(root, selector).filter((item) => item !== source);
+    if (!items.length) return null;
+    const point = horizontal ? x : y;
+    let nearest = null; let nearestDistance = Infinity; let after = false;
+    for (const item of items) {
+      const rect = item.getBoundingClientRect();
+      const center = horizontal ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
+      const distance = Math.abs(point - center);
+      if (distance < nearestDistance) { nearest = item; nearestDistance = distance; after = point > center; }
+    }
+    return nearest ? { item: nearest, after } : null;
+  }
+
+  function commit(sourceUrl, targetUrl, after) {
+    if (!sourceUrl || !targetUrl || sourceUrl === targetUrl) return;
+    const current = Array.isArray(state.bookmarks) ? state.bookmarks : [];
+    const next = current.slice();
+    const from = next.findIndex((item) => item.url === sourceUrl);
+    if (from < 0) return;
+    const [moving] = next.splice(from, 1);
+    const to = next.findIndex((item) => item.url === targetUrl);
+    if (to < 0) return;
+    next.splice(to + (after ? 1 : 0), 0, moving);
+    if (next.every((item, index) => item.url === current[index]?.url)) return;
+    state.bookmarks = next;
+    lastBookmarkBarSignature = '';
+    renderBookmarkBar();
+    if (state.internalPage === 'bookmarks') { renderBookmarksPage(); lastPageRenderKey = currentPageRenderKey(); }
+    drift.manage('bookmark:reorder', sourceUrl, targetUrl, !!after);
+  }
+
+  function positionPreview(active, x, y) {
+    if (!active.preview) return;
+    const margin = 8;
+    const width = active.previewWidth;
+    const height = active.previewHeight;
+    const left = Math.max(margin, Math.min(window.innerWidth - width - margin, x + 14));
+    const top = Math.max(margin, Math.min(window.innerHeight - height - margin, y + 16));
+    active.preview.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+  }
+
+  function startVisuals(active, event) {
+    const rect = active.source.getBoundingClientRect();
+    active.previewWidth = Math.max(44, Math.ceil(rect.width));
+    active.previewHeight = Math.max(28, Math.ceil(rect.height));
+
+    const preview = active.source.cloneNode(true);
+    preview.classList.remove('bm-dragging', 'bm-drop-before', 'bm-drop-after', 'bm-hidden');
+    preview.classList.add('bookmark-drag-preview');
+    preview.removeAttribute('id');
+    preview.setAttribute('aria-hidden', 'true');
+    preview.style.width = `${active.previewWidth}px`;
+    preview.style.height = `${active.previewHeight}px`;
+    preview.querySelectorAll('button, input, select, textarea, [tabindex]').forEach((node) => {
+      node.setAttribute('tabindex', '-1');
+      if ('disabled' in node) node.disabled = true;
     });
-    root.addEventListener('dragover', (e) => {
-      if (!dragUrl) return;
-      const item = e.target.closest?.(itemSelector);
-      if (!item) return;
-      e.preventDefault(); e.dataTransfer.dropEffect = 'move';
-      const r = item.getBoundingClientRect();
-      const after = horizontal ? e.clientX > r.left + r.width / 2 : e.clientY > r.top + r.height / 2;
-      clearMarks();
-      if ((item.dataset.url || item.dataset.bookmarkUrl) !== dragUrl) item.classList.add(after ? 'bm-drop-after' : 'bm-drop-before');
+
+    const placeholder = document.createElement('div');
+    placeholder.className = `bookmark-drop-placeholder${active.horizontal ? ' bookmark-drop-placeholder-bar' : ' bookmark-drop-placeholder-manager'}`;
+    placeholder.setAttribute('aria-hidden', 'true');
+    placeholder.style.width = active.horizontal ? `${active.previewWidth}px` : '100%';
+    placeholder.style.height = `${active.previewHeight}px`;
+
+    active.preview = preview;
+    active.placeholder = placeholder;
+    document.body.append(preview);
+    active.source.classList.add('bm-dragging');
+    document.body.classList.add('bookmark-reordering');
+    document.body.style.userSelect = 'none';
+    positionPreview(active, event.clientX, event.clientY);
+  }
+
+  function movePlaceholder(active, target) {
+    clearMarks();
+    if (!target?.item || !target.item.parentNode) {
+      active.placeholder?.remove();
+      active.target = null;
+      active.after = false;
+      return;
+    }
+    const parent = target.item.parentNode;
+    const before = target.after ? target.item.nextSibling : target.item;
+    if (active.placeholder.parentNode !== parent || active.placeholder.nextSibling !== before) {
+      parent.insertBefore(active.placeholder, before);
+    }
+    target.item.classList.add(target.after ? 'bm-drop-after' : 'bm-drop-before');
+    active.target = target.item;
+    active.after = !!target.after;
+  }
+
+  function reset() {
+    if (!drag) return;
+    drag.source?.classList.remove('bm-dragging');
+    drag.preview?.remove();
+    drag.placeholder?.remove();
+    document.body.classList.remove('bookmark-reordering');
+    document.body.style.userSelect = '';
+    clearMarks();
+    drag = null;
+    // Recalculate overflow after the temporary placeholder has left the bar.
+    window.dispatchEvent(new Event('resize'));
+  }
+
+  function bind(root, selector, horizontal, requireHandle = false) {
+    if (!root) return;
+    root.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !event.isPrimary) return;
+      const item = event.target.closest?.(selector);
+      if (!item || item.classList.contains('bm-hidden')) return;
+      if (requireHandle && !event.target.closest('.drag-handle')) return;
+      if (event.target.closest('input,button:not(.bookmark-link),select,textarea')) return;
+      drag = { root, selector, horizontal, source: item, sourceUrl: itemUrl(item), pointerId: event.pointerId,
+        startX: event.clientX, startY: event.clientY, started: false, target: null, after: false, preview: null, placeholder: null };
+      try { item.setPointerCapture(event.pointerId); } catch { /* document listeners remain the fallback */ }
     });
-    root.addEventListener('drop', (e) => {
-      if (!dragUrl) return;
-      const item = e.target.closest?.(itemSelector);
-      if (!item) return;
-      e.preventDefault();
-      const r = item.getBoundingClientRect();
-      const after = horizontal ? e.clientX > r.left + r.width / 2 : e.clientY > r.top + r.height / 2;
-      clearMarks(); commit(item, after);
-    });
-    root.addEventListener('dragend', () => { dragUrl = ''; clearMarks(); document.querySelectorAll('.bm-dragging').forEach((el) => { el.classList.remove('bm-dragging'); if (el.classList.contains('bookmark-manager-row')) el.draggable = false; }); });
-    root.addEventListener('dragleave', (e) => { if (!root.contains(e.relatedTarget)) clearMarks(); });
-  };
-  bind($('bookmark-items'), '.bookmark-link', true);
-  const pageMain = $('page-main');
-  bind(pageMain, '.bookmark-manager-row', false);
-  // Only the grip starts a row drag, so text inside the row's inputs stays selectable.
-  pageMain.addEventListener('mousedown', (e) => {
-    const row = e.target.closest?.('.bookmark-manager-row');
-    if (row) row.draggable = !!e.target.closest('.drag-handle');
+  }
+
+  document.addEventListener('pointermove', (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+    if (!drag.started && distance < 6) return;
+    if (!drag.started) {
+      drag.started = true;
+      startVisuals(drag, event);
+    }
+    event.preventDefault();
+    positionPreview(drag, event.clientX, event.clientY);
+    const target = targetAt(drag.root, drag.selector, drag.horizontal, event.clientX, event.clientY, drag.source);
+    movePlaceholder(drag, target);
+  }, { passive: false });
+
+  document.addEventListener('pointerup', (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const active = drag;
+    if (active.started) {
+      const target = targetAt(active.root, active.selector, active.horizontal, event.clientX, event.clientY, active.source);
+      const resolved = target || (active.target ? { item: active.target, after: active.after } : null);
+      if (resolved) commit(active.sourceUrl, itemUrl(resolved.item), resolved.after);
+      suppressBookmarkClickUntil = Date.now() + 450;
+      setTimeout(() => { if (Date.now() >= suppressBookmarkClickUntil) suppressBookmarkClickUntil = 0; }, 500);
+    }
+    try { active.source?.releasePointerCapture(event.pointerId); } catch {}
+    reset();
   });
+  document.addEventListener('pointercancel', (event) => { if (drag && event.pointerId === drag.pointerId) reset(); });
+  window.addEventListener('blur', reset);
+  document.addEventListener('click', (event) => {
+    if (Date.now() <= suppressBookmarkClickUntil && event.target.closest('.bookmark-link')) {
+      event.preventDefault(); event.stopImmediatePropagation(); suppressBookmarkClickUntil = 0;
+    }
+  }, true);
+
+  bind($('bookmark-items'), '.bookmark-link', true, false);
+  bind($('page-main'), '.bookmark-manager-row', false, true);
 })();

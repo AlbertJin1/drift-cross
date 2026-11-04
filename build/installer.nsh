@@ -42,7 +42,7 @@
 
 !macro customWelcomePage
   !insertmacro DriftSet MUI_WELCOMEPAGE_TITLE "A clearer way through the web"
-  !insertmacro DriftSet MUI_WELCOMEPAGE_TEXT "Welcome to Drift. A fast, considered browser that keeps what you need close and the clutter out of the way.$\r$\n$\r$\nSetup will install Drift for your Windows account without needing administrator permission. Pick the all-users option on the next page if you'd rather share it with everyone on this PC.$\r$\n$\r$\nTip: close any running copy of Drift first. Setup will offer to do that for you if you forget."
+  !insertmacro DriftSet MUI_WELCOMEPAGE_TEXT "Welcome to Drift. A fast, considered browser that keeps what you need close and the clutter out of the way.$\r$\n$\r$\nSetup installs Drift only for your Windows account and never requests administrator permission. Other Windows accounts can install their own copy in their own user folder.$\r$\n$\r$\nTip: close any running copy of Drift first. Setup will offer to do that for you if you forget."
   !insertmacro DriftFlag MUI_WELCOMEPAGE_TITLE_3LINES
   !insertmacro MUI_PAGE_WELCOME
 !macroend

@@ -1,7 +1,117 @@
+# Drift v1.3.17 — Windows Update Helper Reliability
+
+- Removed PowerShell from the manual Restart to update path. Drift now launches the SHA-256-verified staged `Drift-Setup.exe` directly as a hidden, detached helper.
+- The Setup process writes a one-time readiness token after its Electron runtime initializes, then waits for the current Drift PID to exit normally before replacing the installation.
+- Setup owns its update lock, performs the install, checks that the new browser window opens, and rolls back/reopens the previous version if validation fails.
+- Moved differential base caching into the Setup process and added deferred staged-installer cleanup after the helper exits.
+- Kept compatibility with earlier releases that still start Setup through their PowerShell helper.
+- Settings > About now displays the actual Setup startup failure reason rather than a generic Windows helper error.
+- Bumped the application and lockfile version to 1.3.17.
+
+## 1.3.16
+
+- Restyled the bookmarks bar with consistent bookmark chips, better favicon sizing, clearer spacing, stronger focus states, and responsive truncation.
+- Restored a visible floating drag preview that follows the pointer, plus an animated insertion placeholder that previews the exact drop position in both the bar and bookmarks manager.
+- Added pointer capture and focus-loss cleanup so bookmark drags remain stable when the pointer leaves the original item.
+- Enforced current-user-only installation: the setup validates that the selected folder is writable before copying files and refuses protected folders rather than requesting UAC/admin elevation.
+- Clarified setup messaging and kept installation metadata in per-user registry locations.
+
+## 1.3.15
+
+### Critical Windows update and relaunch repair
+- Fixed the restart-to-update transaction: the updated browser now writes a tokenized health-check only after the browser chrome has loaded and the main window is visible. Setup verifies the exact expected version and token before deleting the previous installation.
+- This closes a release-blocking gap where Setup launched the new Drift process but never received the browser's launch acknowledgement, treated the update as failed, and restored the old version. The previous build could therefore remain installed even after the updater said the new release was ready.
+- If the new executable cannot open, reports the wrong version, or exits before acknowledging startup, Setup now stops the new install's processes, restores the previous folder, returns a failure code, and lets the helper reopen the previous Drift. Failed attempts record a 15-minute retry delay rather than immediately cycling on every launch; the user can still force a manual retry from Settings > About.
+- Corrected the close-time update path to execute its `.ps1` helper with PowerShell instead of routing it through `cmd.exe` (which cannot execute PowerShell scripts). Both manual Restart and close-time installation now use the same PowerShell helper format.
+- Helper readiness is confirmed by a unique marker, not merely by the existence of a child PID. Added diagnostics to `%APPDATA%\Drift\Updates\updater.log` and `%APPDATA%\Drift\startup.log` for helper startup, installed-version health-check, rollback and relaunch outcomes.
+- Kept `pending.json` and the staged Setup executable until the running updated browser has passed startup health-check and the helper has finished caching the verified installer for future differential updates.
+
+### Compatibility and recovery
+- Existing profiles, bookmarks, history, extensions, and incremental-update cache remain intact. No Monitor changes or database schema migration are required.
+- Users currently on a release whose updater lacks the matching health-check acknowledgement must perform this release once using the full v1.3.15 Setup installer. Later updates can use the repaired incremental/manual update path.
+
+### Verification
+- Added regression tests for token/version/path validation, post-window-show acknowledgement wiring, failed child launches despite assigned PIDs, and the PowerShell helper's health-check arguments.
+
+## 1.3.14
+
+### Bookmarks and history
+- Replaced native bookmark drag-and-drop with pointer-driven reordering. Drops are resolved across bookmark gaps and edges, including moving the first bookmark to later positions; an immutable reorder operation updates the saved list.
+- Added explicit Move Up / Move Down controls in the Bookmarks manager as an accessible fallback, and made the main-process reorder operation share the same tested ordering rules.
+- Bookmarks now retain Chromium's discovered favicon. The bookmark bar, bookmark manager and history page render actual site icons with a safe fallback chain (saved icon, site `/favicon.ico`, domain-icon fallback, then initials).
+- History now stores the page favicon when available and groups visits by Today, Yesterday and calendar date, with host and visit time metadata and a one-click search reset.
+- Improved narrow-window behavior for bookmark creation, manager actions and history rows.
+
+### Privacy protection
+- Added an independently configurable pop-up blocker. It denies unsupported schemes, known advertising-host pop-ups and unsolicited window opens without a recent trusted pointer or keyboard action; normal user-initiated web links continue to open in tabs.
+- Added a tiny isolated page preload to signal trusted pointer/keyboard activity to the main process. The page cannot access the IPC bridge, and the signal is rate-limited.
+- Expanded the bundled high-confidence ad/tracker host rules and exposed pop-up blocking in Settings > Privacy and the protection dialog. Per-site ad-block exceptions do not silently disable the independent pop-up blocker.
+- Added regression tests for first-item reordering in both directions, immutable order changes, safe favicon URLs, pop-up gesture handling, ad-host decisions and site-exception behavior.
+
+### Compatibility
+- Existing bookmarks and history files remain compatible. Favicon metadata is optional and is populated as Chromium discovers icons; existing entries use a fallback icon until then.
+- Pop-up blocking is enabled by default for existing profiles. It can be disabled in Settings > Privacy or in the protection dialog.
+
+## 1.3.13
+
+### What's new
+- Added incremental Windows updates using the Universal App Monitor's `psd-chunks-v1` content-defined chunk manifests. Drift compares the latest installer against a previously verified installer cache, downloads only missing chunks, reconstructs the new Setup executable, and verifies every chunk plus the complete file SHA-256 before staging it.
+- Added a compressed one-file ZIP package fallback. Existing installs without a compatible cached base (including the first update after installing 1.3.13), old Monitor deployments, unavailable manifests, oversized deltas, and corrupt/incompatible delta responses automatically use the verified compressed package; if that package is unavailable or invalid, Drift falls back to the verified raw Setup executable.
+- After a successful update, the helper retains the newly installed, already-verified Setup executable as the next differential base. Only the current base is retained to limit disk usage. The profile, browsing data, and installed browser files are not used as delta bases.
+- Added bounded manifest/archive/package downloads, strict ZIP entry and local-header validation, per-chunk SHA-256 checks, complete reconstructed-file SHA-256 and Windows executable checks, and end-to-end regression tests against a simulated Universal App Monitor gateway. The updater also reports comparison/download progress and the actual transfer size/savings in Settings > About.
+- Cached base indexing computes the whole-file checksum in the same streaming pass, rejects cache files changed during indexing, and avoids blocking the browser UI with synchronous file hashing. A verified ZIP extraction safely replaces an older staged installer on Windows.
+
+### Compatibility and rollout
+- No Monitor database migration is required. The supplied Universal App Monitor already exposes Drift's manifest and delta endpoints and publishes the compressed ZIP package metadata. The Monitor must generate a `psd-chunks-v1` manifest for each new Drift release; releases without one remain compatible through the full-package fallback.
+- Existing users upgrading from 1.3.12 normally download the compressed full package once because they do not yet have a cached base installer. After 1.3.13 installs successfully, later releases can use changed-chunk downloads when that saves bandwidth.
+
+### Verification
+- Added tests for PHP/JS-compatible chunk indexing, manifest validation, delta parsing, chunk and whole-file integrity, ZIP safety, incremental download, first-update fallback, corrupted-delta fallback, and caching the next base installer.
+
+## 1.3.12
+
+### Fixes
+- Settings > About now waits for Windows to confirm that the detached update helper actually started before Drift quits. If both the headless console helper and hidden `cmd.exe` fallback fail, Drift remains open, the downloaded installer is kept, the apply lock is removed, and the user can retry.
+- The update installer now keeps the previous installation as a rollback copy until the new `Drift.exe` confirms startup. If the updated executable cannot be launched, Setup restores the previous version instead of reporting a successful update with no browser window.
+- Startup and user-requested updates verify staged installer checksums asynchronously so large update files do not block Electron's main thread while hashing.
+- About > Updates now displays an installing state and a clear retry action when the Windows helper cannot be started.
+- Audited responsive layout behavior: the toolbar, tabs, bookmarks, settings pages, dialogs and native tab view continue to reflow on actual resize, container-width and display-DPI changes.
+
+### Verification
+- Added installer launch/rollback handoff tests and responsive-layout regression checks. Windows installer execution still requires an actual Windows test machine.
+
+## 1.3.11
+
+### What's new
+- Windows taskbar identity is now consistent between the running Drift browser and the Start Menu/Desktop shortcuts (`org.drift.browser`). A launch from the pinned shortcut is routed to the already-running Drift window rather than opening a second visible browser instance.
+- `Ctrl+Shift+T` now restores the most recently closed tab or complete browser window. Closed-window recovery preserves tab order and the active tab, survives normal restarts, and can recover the last durable browser session after an unclean termination.
+- The Recently closed menu now distinguishes individual tabs from closed browser windows and lets users restore a specific item.
+- Added a polished browser-chrome entrance, window fade-in/fade-out, and refined tab, page, dialog, and menu transitions. Full / Reduced / Off motion preferences and the OS reduced-motion preference remain respected.
+
+### Fixes and compatibility
+- The existing app ID remains `org.drift.browser`; no new application identity or profile directory is introduced.
+- Startup mode `Continue where you left off` does not add a duplicate closed-window entry because that same session already opens automatically.
+- The new restore history is stored locally in `recently-closed.json`; it does not contain browser telemetry or get transmitted to the Monitor.
+
 # Drift changelog
 
 Each release needs a `## <version>` section matching `version` in package.json: release.bat refuses to upload without
 one, and publish_to_monitor.ps1 sends that section to the monitor as the release notes.
+
+## 1.3.10
+
+### Fixes
+- Fixed Drift not opening (a Drift process in Task Manager but no window) and very slow first launches after an update. A Drift started by the update installer waited up to 2.5 minutes, invisibly, for the installer's own cleanup to finish, and while it waited it held Drift's single-instance lock, so clicking Drift again did nothing. A launch of the already-updated version no longer waits at all.
+- An update lock left behind by an installer helper that was killed (sign-out, antivirus, Task Manager) is now detected immediately instead of blocking launches for minutes.
+- If a launch really must wait for an installer, a small "Finishing the update" window is shown instead of nothing.
+- The window can no longer stay hidden because of a slow extension or Chrome Web Store start-up: Drift waits at most a few seconds for extensions, which keep loading in the background, and a watchdog shows the window after 8 seconds in any case.
+- Restarting after an update releases the single-instance lock first, so the new copy can no longer start, find the lock taken and quit silently.
+- If Drift fails while starting it now says so (with the path of the log) instead of quitting silently.
+- The silent updater copies several files at once and its helper commands have time limits, so a stuck step cannot hang the update.
+
+### Technical notes
+- Every launch appends timed lines to `%APPDATA%\Drift\startup.log`; the last line shows where a launch stopped.
+- 1.3.9 installs that already fail to open must be fixed once by running the new Drift-Setup.exe by hand (it keeps your bookmarks, history and settings); later updates are then automatic.
 
 ## 1.3.9
 
