@@ -10,6 +10,8 @@ const { createTelemetry } = require('./telemetry');
 const { createReviewService } = require('./reviews');
 const { createReviewPrompt } = require('./review-prompt');
 const { createStorage } = require('./storage');
+const { spawn } = require('child_process');
+const { createProfileManager, ProfileError } = require('./profiles');
 const { planDiscards, measurePressure, normalizeTabOptimizationSettings, discardConfigFromSettings } = require('./memory-manager');
 const { normalizeAppearanceOptions } = require('./appearance-settings');
 const { createRecentlyClosedStore } = require('./recently-closed');
@@ -29,8 +31,16 @@ const APP_USER_MODEL_ID = 'org.drift.browser';
 app.setName('Drift');
 if (process.platform === 'win32') app.setAppUserModelId(APP_USER_MODEL_ID);
 const LEGACY_USER_DATA_DIRECTORY = app.getPath('userData');
+// APP_DATA_DIRECTORY is the folder shared by every profile (profile registry, update files, startup log).
+// Each browser profile gets its own userData folder, which is what keeps cookies, logins, site storage,
+// cache, extensions, bookmarks, history and settings completely separate (see profiles.js). The "Default"
+// profile lives in the shared folder itself, so existing installs keep their data without any migration.
 const APP_DATA_DIRECTORY = path.join(app.getPath('appData'), 'Drift');
-app.setPath('userData', APP_DATA_DIRECTORY);
+const profiles = createProfileManager({ rootDir: APP_DATA_DIRECTORY });
+const ACTIVE_PROFILE_ID = profiles.resolveActive(process.argv);
+const PROFILE_DIRECTORY = profiles.dirFor(ACTIVE_PROFILE_ID);
+try { fs.mkdirSync(PROFILE_DIRECTORY, { recursive: true }); } catch { /* reported when the first file is written */ }
+app.setPath('userData', PROFILE_DIRECTORY);
 
 // ---------------------------------------------------------------- config
 const IS_WINDOWS = process.platform === 'win32';
@@ -96,6 +106,8 @@ const READER_JS = String.raw`(() => {
 // ---------------------------------------------------------------- storage
 const storage = createStorage({ getDir: () => app.getPath('userData') });
 const { file, readJson, writeJson, writeJsonLater } = storage;
+// Data that belongs to the installation rather than to one browsing profile (review-prompt schedule).
+const sharedStorage = createStorage({ getDir: () => APP_DATA_DIRECTORY });
 const recentlyClosed = createRecentlyClosedStore({ readJson, writeJson });
 
 ipcMain.on('page:trusted-input', (event) => {
@@ -109,7 +121,11 @@ function isPathInside(parent, candidate) {
 }
 function ensureUserDataDirectories() {
   fs.mkdirSync(APP_DATA_DIRECTORY, { recursive: true });
+  fs.mkdirSync(PROFILE_DIRECTORY, { recursive: true });
   fs.mkdirSync(path.join(APP_DATA_DIRECTORY, 'Logs'), { recursive: true });
+  profiles.sweep(); // finish deleting any profile whose removal was interrupted
+  profiles.markUsed(ACTIVE_PROFILE_ID); // a plain launch next time opens the profile used last
+  refreshProfileInfo();
   // One-time migration for profiles created by an earlier build using the
   // Electron default userData path. Existing files are never overwritten.
   const legacy = path.resolve(LEGACY_USER_DATA_DIRECTORY);
@@ -128,7 +144,7 @@ function ensureUserDataDirectories() {
 // Chrome-compatible extensions: Chrome Web Store installs + unpacked folders.
 const extensions = createExtensionManager({
   session: () => session.defaultSession,
-  appDataDir: APP_DATA_DIRECTORY,
+  appDataDir: PROFILE_DIRECTORY, // extensions are installed per profile
   readJson, writeJson,
   confirmInstall: (info) => requestExtensionConfirmation(info),
   onChange: () => push()
@@ -199,19 +215,32 @@ let showBookmarksBar = true;
 let downloadDirectory = app.getPath('downloads');
 let askWhereToSave = false;
 let tabOptimizations = normalizeTabOptimizationSettings();
+// The profile this window runs. `count` (how many profiles exist) decides whether the window title names it.
+let profileInfo = { id: ACTIVE_PROFILE_ID, name: 'Default', color: profiles.PROFILE_COLORS[0], isDefault: ACTIVE_PROFILE_ID === profiles.DEFAULT_ID, count: 1 };
+function refreshProfileInfo() {
+  try {
+    const p = profiles.get(ACTIVE_PROFILE_ID);
+    if (p) profileInfo = { id: p.id, name: p.name, color: p.color, isDefault: p.isDefault, count: profiles.count() };
+  } catch (error) { console.warn('Drift could not read its profile list:', error?.message || error); }
+}
 // Silent updater. Uses its own in-memory session, so the ad blocker, cookies and extensions never see its requests.
 let updaterSession = null;
 const monitorFetch = (url, init) => (updaterSession ||= session.fromPartition('drift-updater')).fetch(url, init);
+// Update files and the anonymous install id are shared by all profiles. An update is only installed when no
+// other profile window is open, because replacing the program files would pull them out from under it.
+const SHARED_UPDATES_DIRECTORY = path.join(APP_DATA_DIRECTORY, 'Updates');
 const updater = createUpdater({
   app,
   fetch: monitorFetch,
-  isEnabled: () => autoUpdate
+  dir: SHARED_UPDATES_DIRECTORY,
+  isEnabled: () => autoUpdate && !profiles.othersRunning(ACTIVE_PROFILE_ID)
 });
 // Usage reporting to the same monitor (open / heartbeat / close). It shares the updater's session and install id.
 const telemetry = createTelemetry({
   app,
   fetch: monitorFetch,
-  isEnabled: () => usageReports,
+  dir: SHARED_UPDATES_DIRECTORY,
+  isEnabled: () => usageReports && !profiles.othersRunning(ACTIVE_PROFILE_ID), // one report stream per installation
   force: process.env.DRIFT_REPORT_DEV === '1', // lets `npm start` report to the monitor for testing (set DRIFT_REPORT_DEV=1)
   identity: { get: () => updater.installId(), set: (id) => updater.adoptInstallId(id) }
 });
@@ -224,8 +253,8 @@ const reviewService = createReviewService({
 // Automatic review prompts are driven by local accumulated application use, not
 // by remote telemetry preferences. The schedule is stored in the Drift profile.
 const reviewPrompt = createReviewPrompt({
-  readJson,
-  writeJson,
+  readJson: sharedStorage.readJson,
+  writeJson: sharedStorage.writeJson,
   getVersion: () => app.getVersion()
 });
 // Toolbar buttons the user pinned next to the address bar, in display order.
@@ -468,6 +497,7 @@ function snapshot() {
     canReportUsage: telemetry.supported(),
     canLaunchAtLogin: process.platform !== 'linux',
     profileDirectory: app.getPath('userData'),
+    profile: profileInfo,
     extensionsDirectory: extensions.directory,
     version: app.getVersion(),
     electronVersion: process.versions.electron,
@@ -486,7 +516,7 @@ function push() {
     try {
     if (ui && wcAlive(ui.webContents)) ui.webContents.send('state', snapshot());
     const t = activeTab();
-    const title = (t?.title || 'New tab') + ' — Drift Browser';
+    const title = (t?.title || 'New tab') + ' — Drift Browser' + (profileInfo.count > 1 ? ` — ${profileInfo.name}` : '');
     if (win && !win.isDestroyed() && title !== lastWindowTitle) {
       lastWindowTitle = title;
       win.setTitle(title);
@@ -590,6 +620,9 @@ function attachView(tab) {
     if (['keyDown', 'rawKeyDown'].includes(input?.type)) trustedInputAt.set(wc.id, Date.now());
   });
   wc.once('destroyed', () => trustedInputAt.delete(wc.id));
+  for (const eventName of ['dom-ready', 'did-finish-load', 'did-stop-loading']) wc.on(eventName, () => reclaimAddressFocus(tab));
+  // A real click inside the page means the person chose to use it: stop pulling focus back to the address bar.
+  wc.on('before-mouse-event', (_event, mouse) => { if (mouse?.type === 'mouseDown' && tab === addressFocusTab) addressFocusUntil = 0; });
   wc.setWindowOpenHandler((details) => {
     const decision = evaluatePopup(details, {
       now: Date.now(), lastGestureAt: trustedInputAt.get(wc.id) || 0, gestureWindowMs: 3000,
@@ -869,7 +902,10 @@ function activateTab(tab) {
 // Hovering a tab shows a thumbnail of its page as it currently looks (so it follows the scroll
 // position) and how much memory its renderer is using. The card is drawn by the browser chrome,
 // so while it is visible the chrome is raised above the page - without taking keyboard focus.
-const THUMB_WIDTH = 360;
+// The hover card is ~280 CSS px wide, so a thumbnail needs roughly 2-3x that to stay sharp on
+// HiDPI screens. Keep it generous and encode at high quality (text edges smear at low JPEG quality).
+const THUMB_WIDTH = 720;
+const THUMB_JPEG_QUALITY = 92;
 let cardLifted = false;
 
 function findTabById(id) {
@@ -891,8 +927,8 @@ async function captureThumb(tab, timeoutMs = 500) {
     ]);
     clearTimeout(timer);
     if (image && !image.isEmpty()) {
-      const small = image.getSize().width > THUMB_WIDTH ? image.resize({ width: THUMB_WIDTH, quality: 'good' }) : image;
-      tab.thumb = `data:image/jpeg;base64,${small.toJPEG(72).toString('base64')}`;
+      const small = image.getSize().width > THUMB_WIDTH ? image.resize({ width: THUMB_WIDTH, quality: 'best' }) : image;
+      tab.thumb = `data:image/jpeg;base64,${small.toJPEG(THUMB_JPEG_QUALITY).toString('base64')}`;
     }
   } catch { /* the page may be mid-navigation or being discarded; keep the previous thumbnail */ }
   return tab.thumb || null;
@@ -1195,16 +1231,36 @@ function closePalette() {
   else activeTab()?.view?.webContents.focus();
 }
 
-function focusAddress() {
+function focusAddress(soft = false) {
   ui?.webContents.focus();
-  ui?.webContents.send('focus-address');
+  ui?.webContents.send('focus-address', { soft: !!soft });
 }
 
 // A fresh tab: empty the address bar and focus it so you can type right away.
+// The New Tab page loads a moment later and Chromium may hand it keyboard focus when it finishes loading, which is why
+// the cursor used to end up in the page's own search box. For a short window after a new tab opens, the address bar
+// takes focus back whenever that page finishes loading (and only until the person clicks into the page themselves).
+let addressFocusTab = null;
+let addressFocusUntil = 0;
 function focusNewTab(tab) {
   // Always put the cursor in the address bar at the top (never in the New Tab page's own search box).
   if (tab && isNewTabUrl(tab.url)) ui?.webContents.send('reset-address'); // empty it, then focus below
+  if (tab) { addressFocusTab = tab; addressFocusUntil = Date.now() + 4000; }
   focusAddress();
+  // Staggered re-assert for the page that is still starting up.
+  for (const delay of [80, 250, 600]) {
+    const timer = setTimeout(() => {
+      if (!winAlive() || paletteOpen || quitting) return;
+      if (addressFocusTab && cur.active === addressFocusTab && isNewTabUrl(addressFocusTab.url) && Date.now() < addressFocusUntil) focusAddress(true);
+    }, delay);
+    timer.unref?.();
+  }
+}
+// Called by a tab's page events: if this is the new tab that was just opened and the page is taking focus, give it back.
+function reclaimAddressFocus(tab) {
+  if (!tab || tab !== addressFocusTab || Date.now() >= addressFocusUntil) return;
+  if (paletteOpen || quitting || !winAlive() || cur.active !== tab || !isNewTabUrl(tab.url)) return;
+  focusAddress(true);
 }
 
 ipcMain.handle('palette:query', (_e, query) => {
@@ -1422,10 +1478,77 @@ ipcMain.handle('updates:install', async (event) => {
   // this process to exit normally before swapping the installation directory.
   const started = await updater.installNow();
   if (started) {
+    // Quit normally first (flushes settings/session), but never let a slow shutdown keep the old process alive:
+    // the update helper is waiting for this PID to disappear, so end it for certain after a short grace period.
     setTimeout(() => app.quit(), 300);
+    setTimeout(() => { try { app.exit(0); } catch { process.exit(0); } }, 5000);
     return { ok: true };
   }
   return { ok: false, message: updater.getStatus().message || 'Drift Setup could not be started. The downloaded update is still available to retry.' };
+});
+
+// ---------------------------------------------------------------- profiles
+// Opening a profile starts another Drift process for it (one process per profile, so Chromium keeps each profile's
+// cookies and storage apart). If that profile is already open, Electron's single-instance lock hands the launch to the
+// running window, which simply comes to the front.
+function launchProfile(id) {
+  return new Promise((resolve) => {
+    const args = [...(app.isPackaged ? [] : [app.getAppPath()]), ...profiles.launchArgs(id)];
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (/^DRIFT_UPDATE_/.test(key) || key === 'ELECTRON_RUN_AS_NODE') delete env[key];
+    let child;
+    try { child = spawn(process.execPath, args, { detached: true, stdio: 'ignore', env }); }
+    catch (error) { resolve({ ok: false, error: `Drift could not open the profile: ${error?.message || error}` }); return; }
+    child.once('error', (error) => resolve({ ok: false, error: `Drift could not open the profile: ${error?.message || error}` }));
+    child.once('spawn', () => { child.unref(); resolve({ ok: true }); });
+  });
+}
+const profileFailure = (error) => ({
+  ok: false,
+  code: error?.code || 'error',
+  error: error instanceof ProfileError ? error.message : 'Drift could not change your profiles. Please try again.'
+});
+const profileList = () => ({ activeId: ACTIVE_PROFILE_ID, profiles: profiles.list(ACTIVE_PROFILE_ID), max: profiles.MAX_PROFILES, colors: profiles.PROFILE_COLORS });
+ipcMain.handle('profiles:list', (event) => {
+  if (!fromChrome(event)) return { activeId: ACTIVE_PROFILE_ID, profiles: [], max: profiles.MAX_PROFILES, colors: profiles.PROFILE_COLORS };
+  refreshProfileInfo();
+  return profileList();
+});
+ipcMain.handle('profiles:create', async (event, input) => {
+  if (!fromChrome(event)) return { ok: false, error: 'This action is only available from Drift.' };
+  try {
+    const profile = profiles.create({ name: input?.name, color: input?.color });
+    refreshProfileInfo(); push();
+    const result = { ok: true, profile, ...profileList() };
+    if (input?.open === true) { const launched = await launchProfile(profile.id); if (!launched.ok) result.warning = launched.error; }
+    return result;
+  } catch (error) { return profileFailure(error); }
+});
+ipcMain.handle('profiles:update', (event, id, input) => {
+  if (!fromChrome(event)) return { ok: false, error: 'This action is only available from Drift.' };
+  try {
+    const patch = {};
+    if (typeof input?.name === 'string') patch.name = input.name;
+    if (typeof input?.color === 'string') patch.color = input.color;
+    const profile = profiles.update(String(id || ''), patch);
+    refreshProfileInfo(); push();
+    return { ok: true, profile, ...profileList() };
+  } catch (error) { return profileFailure(error); }
+});
+ipcMain.handle('profiles:remove', (event, id) => {
+  if (!fromChrome(event)) return { ok: false, error: 'This action is only available from Drift.' };
+  try {
+    profiles.remove(String(id || ''), { activeId: ACTIVE_PROFILE_ID });
+    refreshProfileInfo(); push();
+    return { ok: true, ...profileList() };
+  } catch (error) { return profileFailure(error); }
+});
+ipcMain.handle('profiles:open', async (event, id) => {
+  if (!fromChrome(event)) return { ok: false, error: 'This action is only available from Drift.' };
+  const wanted = String(id || '');
+  if (!profiles.get(wanted)) return { ok: false, error: 'That profile no longer exists.' };
+  if (wanted === ACTIVE_PROFILE_ID) { try { if (winAlive()) { if (win.isMinimized()) win.restore(); win.focus(); } } catch { /* window is closing */ } return { ok: true }; }
+  return launchProfile(wanted);
 });
 
 ipcMain.on('bookmark:update', (_e, url, title, newUrl, folder, favicon) => updateBookmark(String(url || ''), title, newUrl, folder, favicon));
@@ -1793,7 +1916,7 @@ function startupLog(message) {
     const target = path.join(APP_DATA_DIRECTORY, 'startup.log');
     fs.mkdirSync(APP_DATA_DIRECTORY, { recursive: true });
     try { if (fs.statSync(target).size > 100 * 1024) fs.renameSync(target, `${target}.1`); } catch { /* no log yet */ }
-    fs.appendFileSync(target, `[${new Date().toISOString()}] +${Date.now() - STARTUP_T0}ms pid ${process.pid} v${app.getVersion()} ${message}\n`);
+    fs.appendFileSync(target, `[${new Date().toISOString()}] +${Date.now() - STARTUP_T0}ms pid ${process.pid} [${ACTIVE_PROFILE_ID}] v${app.getVersion()} ${message}\n`);
   } catch { /* logging must never stop the browser */ }
 }
 

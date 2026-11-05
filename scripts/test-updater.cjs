@@ -242,7 +242,7 @@ function fixture(server, options = {}) {
     assert.equal(state.downloads, 0);
   });
 
-  await test('closing Drift starts the hidden helper with the staged installer', async () => {
+  await test('closing Drift starts the update helper (with its progress window) from the staged installer', async () => {
     reset();
     const f = fixture(server);
     f.updater.start();
@@ -256,7 +256,7 @@ function fixture(server, options = {}) {
     assert.ok(args.some((value) => value.startsWith('--helper-ready-file=')));
     assert.ok(!args.includes('--force-run'));
     assert.equal(options.detached, true);
-    assert.equal(options.windowsHide, true);
+    assert.equal(options.windowsHide, false, 'the helper shows an update window and a hidden start would make Windows hide it');
     assert.notEqual(path.resolve(options.cwd), path.resolve(f.installDir), 'helper must run outside the install folder');
     assert.ok(fs.existsSync(f.updater.paths.lock));
     assert.equal(JSON.parse(fs.readFileSync(f.updater.paths.pending, 'utf8')).attempts, 1);

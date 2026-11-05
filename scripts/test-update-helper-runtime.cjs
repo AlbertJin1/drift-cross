@@ -47,7 +47,13 @@ const { processIsAlive, waitForProcessExit, writeHelperReadyMarker } = require('
   assert.match(updaterSource, /--wait-pid=\$\{process\.pid\}/);
   assert.doesNotMatch(updaterSource, /spawnConfirmed\('powershell\.exe'/);
   const setupSource = fs.readFileSync(path.join(__dirname, '../src/setup/installer.js'), 'utf8');
-  assert.match(setupSource, /await waitForProcessExit\(waitPidArg, \{ timeoutMs: 180000 \}\)/);
+  assert.match(setupSource, /await waitForProcessExit\(waitPidArg, \{ timeoutMs: 10000 \}\)/);
+  assert.match(setupSource, /taskkill\.exe', \['\/PID', String\(waitPidArg\), '\/T', '\/F'\]/, 'a lingering old Drift process must be ended, not waited on forever');
+  assert.match(setupSource, /showUpdateWindow\(\)/, 'the update helper must show a progress window');
+  const launchBlock = setupSource.match(/const launchDrift = [\s\S]*?\}, 20000\);/);
+  assert.ok(launchBlock, 'launchDrift helper is missing');
+  assert.doesNotMatch(launchBlock[0], /windowsHide/, 'Drift must never be relaunched with a hidden window');
+  assert.doesNotMatch(setupSource.slice(setupSource.indexOf('async function runSilentUpdate')).replace(/\/\/ NOTE:[^\n]*\n(?:\s*\/\/[^\n]*\n)*/g, ''), /spawn[^;]*windowsHide: true/, 'no relaunch path may hide the window');
   assert.match(setupSource, /writeSetupHelperReadyMarker\(\)/);
   assert.match(setupSource, /setImmediate\(\(\) => app\.exit\(0\)\)/);
   assert.match(fs.readFileSync(path.join(__dirname, '../src/setup/entry.js'), 'utf8'), /process\.argv\.includes\('--silent-update'\)/);

@@ -7,4 +7,7 @@ contextBridge.exposeInMainWorld('setup', {
   launch: (p) => ipcRenderer.invoke('launch', p),
   win: (a) => ipcRenderer.send('win', a),
   onProgress: (cb) => ipcRenderer.on('progress', (_e, d) => cb(d)),
+  // update progress window (update.html)
+  onUpdateState: (cb) => ipcRenderer.on('update-state', (_e, d) => cb(d)),
+  closeUpdate: () => ipcRenderer.send('update-close'),
 });

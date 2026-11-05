@@ -8,7 +8,7 @@ const MANAGE_CHANNELS = [
   'adblock:toggle', 'popup-block:toggle', 'adblock:toggle-site', 'adblock:reset-count', 'settings:update',
   'downloads:action', 'find:query', 'find:next', 'find:close', 'extension:confirm-response'
 ];
-const INVOKE_CHANNELS = ['downloads:choose-folder', 'downloads:clear', 'extensions:install', 'extensions:install-store', 'extensions:remove', 'data:clear', 'menu:data', 'tabs:preview', 'reviews:submit', 'reviews:maybe-prompt', 'reviews:prompt-shown', 'reviews:defer', 'updates:check', 'updates:install'];
+const INVOKE_CHANNELS = ['downloads:choose-folder', 'downloads:clear', 'extensions:install', 'extensions:install-store', 'extensions:remove', 'data:clear', 'menu:data', 'tabs:preview', 'reviews:submit', 'reviews:maybe-prompt', 'reviews:prompt-shown', 'reviews:defer', 'updates:check', 'updates:install', 'profiles:list', 'profiles:create', 'profiles:update', 'profiles:remove', 'profiles:open'];
 
 contextBridge.exposeInMainWorld('drift', {
   platform: process.platform,

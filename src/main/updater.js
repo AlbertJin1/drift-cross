@@ -679,7 +679,7 @@ function createUpdater(deps) {
       fs.rmSync(P.healthcheck, { force: true });
       writeJson(P.lock, { startedAt: now(), version: pending.version, pid: process.pid });
       const child = spawnImpl(installer, setupHelperArgs(pending, { relaunch, readyToken, healthcheckToken }), {
-        cwd: os.tmpdir(), detached: true, stdio: 'ignore', windowsHide: true
+        cwd: os.tmpdir(), detached: true, stdio: 'ignore', windowsHide: false
       });
       if (!child || typeof child.once !== 'function') throw new Error('Windows did not create the verified Drift Setup helper.');
       child.once('spawn', () => {
@@ -759,7 +759,7 @@ function createUpdater(deps) {
 
   async function launchApplyHelperConfirmed(installer, pending, { relaunch = false, readyToken, healthcheckToken } = {}) {
     const args = setupHelperArgs(pending, { relaunch, readyToken, healthcheckToken });
-    const options = { cwd: os.tmpdir(), detached: true, stdio: 'ignore', windowsHide: true };
+    const options = { cwd: os.tmpdir(), detached: true, stdio: 'ignore', windowsHide: false };
     const result = await spawnConfirmed(installer, args, options, 20000);
     if (!result.ok) {
       const message = `Windows could not launch the verified Setup package (${result.error?.message || 'unknown Windows process error'}).`;

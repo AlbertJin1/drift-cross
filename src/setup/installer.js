@@ -107,6 +107,38 @@ const copy = (s, d, onBytes) => new Promise((res, rej) => {
 });
 const walk = (d, out = []) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); e.isDirectory() ? walk(p, out) : out.push(p); } return out; };
 
+// ---------------------------------------------------------------- update progress window
+// The silent updater used to run with no window at all, so a stuck update looked like a frozen process in Task Manager.
+// This small window shows every step (closing Drift, installing, reopening) and any error.
+let updateWin = null;
+let updateClosable = false;
+let lastUpdateState = { step: 'wait', pct: 2, title: 'Preparing the update', detail: 'Getting ready…' };
+function showUpdateWindow() {
+  try {
+    updateWin = new BrowserWindow({ width: 460, height: 300, frame: false, resizable: false, maximizable: false, minimizable: true, alwaysOnTop: true,
+      show: false, center: true, skipTaskbar: false, backgroundColor: '#0b1020', title: 'Updating Drift',
+      icon: path.join(__dirname, '..', '..', 'build', 'icon.png'),
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false } });
+    updateWin.setMenuBarVisibility(false);
+    updateWin.on('close', (event) => { if (!updateClosable) event.preventDefault(); });
+    updateWin.webContents.on('did-finish-load', () => { try { updateWin.webContents.send('update-state', lastUpdateState); } catch {} });
+    // The first update from an older Drift starts this helper with a hidden-window flag, and Windows then ignores the
+    // first ShowWindow call. Showing twice guarantees the window appears for that one transition update as well.
+    updateWin.once('ready-to-show', () => {
+      try { updateWin.show(); updateWin.focus(); } catch {}
+      setTimeout(() => { try { if (updateWin && !updateWin.isDestroyed()) { updateWin.show(); updateWin.moveTop(); } } catch {} }, 250);
+    });
+    updateWin.loadFile(path.join(__dirname, 'update.html'));
+    // Never leave the window invisible: show it even if ready-to-show is missed.
+    setTimeout(() => { try { if (updateWin && !updateWin.isDestroyed() && !updateWin.isVisible()) updateWin.show(); } catch {} }, 2500);
+  } catch { updateWin = null; }
+}
+function updateUi(state) {
+  lastUpdateState = { ...lastUpdateState, ...state };
+  try { if (updateWin && !updateWin.isDestroyed()) updateWin.webContents.send('update-state', lastUpdateState); } catch {}
+}
+const closeUpdateWindow = () => { updateClosable = true; try { if (updateWin && !updateWin.isDestroyed()) updateWin.destroy(); } catch {} updateWin = null; };
+
 app.whenReady().then(() => {
   if (silentUpdate) {
     try { writeSetupHelperReadyMarker(); }
@@ -115,6 +147,7 @@ app.whenReady().then(() => {
       app.exit(1);
       return;
     }
+    showUpdateWindow();
     runSilentUpdate();
     return;
   }
@@ -124,9 +157,10 @@ app.whenReady().then(() => {
   win.loadFile(path.join(__dirname, 'index.html'));
   win.once('ready-to-show', () => win.show());
 });
-app.on('window-all-closed', () => app.quit());
+app.on('window-all-closed', () => { if (!silentUpdate) app.quit(); }); // the update helper window closes itself when the update is finished
 
-ipcMain.on('win', (_e, a) => { if (a === 'min') win.minimize(); if (a === 'close') win.close(); });
+ipcMain.on('win', (_e, a) => { if (!win) return; if (a === 'min') win.minimize(); if (a === 'close') win.close(); });
+ipcMain.on('update-close', () => { if (updateWin && !updateWin.isDestroyed() && updateClosable) updateWin.destroy(); });
 ipcMain.handle('browse', async (_e, cur) => {
   const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], defaultPath: path.dirname(cur || defaultDir) });
   if (r.canceled || !r.filePaths[0]) return null;
@@ -207,7 +241,7 @@ const copyRetry = async (s, d) => {
   }
 };
 // Several files at a time (thousands of small files dominate the time, not the bytes).
-const copyAll = async (files, mapDest) => {
+const copyAll = async (files, mapDest, onFile) => {
   const made = new Set();
   let next = 0;
   const worker = async () => {
@@ -215,6 +249,7 @@ const copyAll = async (files, mapDest) => {
       const f = files[next++], dest = mapDest(f), folder = path.dirname(dest);
       if (!made.has(folder)) { fs.mkdirSync(folder, { recursive: true }); made.add(folder); }
       await copyRetry(f, dest);
+      if (onFile) onFile();
     }
   };
   await Promise.all(Array.from({ length: 8 }, worker));
@@ -232,6 +267,13 @@ const removeDirRetry = async (directory, attempts = 24) => {
   }
   throw lastError || new Error(`Could not remove ${directory}.`);
 };
+// Ends every Drift process that still runs from the install folder (main process, GPU/renderer/utility children, the
+// VPN helper). A browser that "closed" but left processes behind used to keep the update waiting and the folder locked.
+async function forceCloseInstalledDrift(dir, log) {
+  const ok = await killInstalled(dir);
+  log(ok ? 'no Drift process is left running from the install folder' : 'some Drift processes could not be closed');
+  return ok;
+}
 async function runSilentUpdate() {
   const logFile = argValue('log-file') || path.join(process.env.APPDATA || os.tmpdir(), 'Drift', 'Updates', 'updater.log');
   const log = (m) => { try { fs.mkdirSync(path.dirname(logFile), { recursive: true }); fs.appendFileSync(logFile, `[${new Date().toISOString()}] setup: ${m}\n`); } catch {} };
@@ -239,84 +281,132 @@ async function runSilentUpdate() {
   const healthcheckFile = healthcheckFileArg;
   const healthcheckToken = healthcheckTokenArg;
   const stage = `${dir}.update`, old = `${dir}.old`;
+  const newVersion = app.getVersion();
   let launched = null;
+  let swapped = false;     // the install folder now holds the new version
+  let inPlace = false;     // fallback used: files were copied over the live folder, no .old backup exists
+  let failureMessage = '';
+  const launchEnv = () => {
+    const env = { ...process.env };
+    delete env.PORTABLE_EXECUTABLE_FILE; delete env.PORTABLE_EXECUTABLE_DIR; delete env.PORTABLE_EXECUTABLE_APP_FILENAME;
+    return env;
+  };
+  // NOTE: no windowsHide here. STARTF_USESHOWWINDOW/SW_HIDE makes Windows ignore the first ShowWindow call of the child,
+  // so the browser started but its window never appeared: Drift sat invisibly in Task Manager and "did not open".
+  const launchDrift = (extraEnv = {}) => spawnDetachedConfirmed(spawn, path.join(dir, 'Drift.exe'), [], {
+    detached: true, stdio: 'ignore', env: { ...launchEnv(), ...extraEnv }, cwd: dir
+  }, 20000);
   try {
     if (!dir || path.resolve(dir).toLowerCase() === path.resolve(srcDir).toLowerCase() || !fs.existsSync(path.join(dir, 'Drift.exe'))) throw new Error(`"${dir}" is not an existing Drift install`);
     if (waitPidRaw !== null && (!Number.isSafeInteger(waitPidArg) || waitPidArg <= 0 || waitPidArg === process.pid)) throw new Error('The update helper received an invalid parent Drift PID.');
     if (forceRun && (!healthcheckFile || !/^[a-f0-9]{32,64}$/i.test(healthcheckToken || ''))) throw new Error('The update launch health-check parameters are missing or invalid.');
-    log(`updating ${dir} to ${app.getVersion()}`);
+    log(`updating ${dir} to ${newVersion}`);
+
+    // ---- 1. close Drift (politely first, then for real)
+    updateUi({ step: 'close', pct: 6, title: `Updating Drift to v${newVersion}`, detail: 'Closing Drift…' });
     if (waitPidArg) {
-      log(`waiting for the current Drift process ${waitPidArg} to exit normally`);
-      await waitForProcessExit(waitPidArg, { timeoutMs: 180000 });
-      // Allow Electron/Chromium child processes and Windows file handles to close
-      // after the main process has exited. Directory swap retries remain in place.
-      await sleep(900);
-      log(`current Drift process ${waitPidArg} has exited; proceeding without PowerShell`);
-    } else {
-      // Compatibility with earlier releases: their detached launcher already
-      // waits for the old Drift PID before starting Setup. Avoid spawning a
-      // second PowerShell process from this silent update path.
-      await sleep(900);
+      log(`waiting for the current Drift process ${waitPidArg} to exit`);
+      try { await waitForProcessExit(waitPidArg, { timeoutMs: 10000 }); log(`Drift process ${waitPidArg} exited on its own`); }
+      catch {
+        log(`Drift process ${waitPidArg} is still alive after 10s; ending it`);
+        await run('taskkill.exe', ['/PID', String(waitPidArg), '/T', '/F'], 10000);
+        await waitForProcessExit(waitPidArg, { timeoutMs: 10000 }).catch(() => log('the old Drift process is still listed; continuing with a forced folder cleanup'));
+      }
     }
+    await forceCloseInstalledDrift(dir, log);
+    await sleep(700);
+
+    // ---- 2. stage the new files next to the install folder
+    updateUi({ step: 'copy', pct: 12, detail: 'Preparing the new version…' });
     fs.rmSync(stage, { recursive: true, force: true });
     fs.rmSync(old, { recursive: true, force: true });
     const payloadFiles = walk(srcDir);
     if (!payloadFiles.some((f) => path.basename(f).toLowerCase() === 'drift.exe')
       || !payloadFiles.some((f) => path.basename(f).toLowerCase() === 'app.asar')) throw new Error('The downloaded Setup payload is incomplete (Drift.exe or resources/app.asar is missing).');
-    await copyAll(payloadFiles, (f) => path.join(stage, path.relative(srcDir, f)));
+    let copied = 0;
+    await copyAll(payloadFiles, (f) => path.join(stage, path.relative(srcDir, f)), () => {
+      copied += 1;
+      if (copied % 6 === 0 || copied === payloadFiles.length) updateUi({ step: 'copy', pct: 12 + Math.round((copied / payloadFiles.length) * 63), detail: `Installing files (${copied} of ${payloadFiles.length})…` });
+    });
     if (!fs.existsSync(path.join(stage, 'Drift.exe')) || !fs.existsSync(path.join(stage, 'resources', 'app.asar'))) throw new Error('The staged application files are incomplete.');
-    await renameRetry(dir, old);
-    try { await renameRetry(stage, dir); }
-    catch (e) { await renameRetry(old, dir); throw e; }
 
+    // ---- 3. swap the folders (fast, atomic, with backup); if Windows keeps a file locked, overwrite in place instead
+    updateUi({ step: 'swap', pct: 78, detail: 'Switching to the new version…' });
+    try {
+      await renameRetry(dir, old);
+      try { await renameRetry(stage, dir); }
+      catch (e) { await renameRetry(old, dir); throw e; }
+      swapped = true;
+    } catch (swapError) {
+      log(`folder swap failed (${swapError.message}); ending leftover Drift processes and copying over the install folder`);
+      await forceCloseInstalledDrift(dir, log);
+      await sleep(800);
+      if (!fs.existsSync(dir) && fs.existsSync(old)) { try { fs.renameSync(old, dir); } catch {} }
+      if (!fs.existsSync(path.join(dir, 'Drift.exe')) && !fs.existsSync(stage)) throw swapError;
+      const stagedFiles = walk(stage);
+      await copyAll(stagedFiles, (f) => path.join(dir, path.relative(stage, f)));
+      swapped = true; inPlace = true;
+      try { fs.rmSync(stage, { recursive: true, force: true }); } catch {}
+    }
+    log(`the install folder now holds v${newVersion}${inPlace ? ' (copied in place)' : ''}`);
+
+    // ---- 4. reopen Drift and wait until its window is really up
     if (forceRun) {
-      const env = { ...process.env };
-      delete env.PORTABLE_EXECUTABLE_FILE;
-      delete env.PORTABLE_EXECUTABLE_DIR;
-      delete env.PORTABLE_EXECUTABLE_APP_FILENAME;
-      env.DRIFT_UPDATE_HEALTHCHECK_FILE = healthcheckFile;
-      env.DRIFT_UPDATE_HEALTHCHECK_TOKEN = healthcheckToken;
-      env.DRIFT_UPDATE_EXPECTED_VERSION = app.getVersion();
+      updateUi({ step: 'launch', pct: 86, detail: 'Opening the updated Drift…' });
       try {
-        launched = await spawnDetachedConfirmed(spawn, path.join(dir, 'Drift.exe'), [], {
-          detached: true, stdio: 'ignore', env, cwd: dir, windowsHide: true
-        }, 15000);
-        const result = await waitForUpdateHealthcheck(healthcheckFile, app.getVersion(), healthcheckToken, {
-          timeoutMs: 60000,
-          pollMs: 250,
-          isProcessAlive: () => launched && launched.exitCode === null && launched.signalCode === null
+        launched = await launchDrift({
+          DRIFT_UPDATE_HEALTHCHECK_FILE: healthcheckFile,
+          DRIFT_UPDATE_HEALTHCHECK_TOKEN: healthcheckToken,
+          DRIFT_UPDATE_EXPECTED_VERSION: newVersion
         });
-        log(`new browser health-check passed for v${result.version}, pid ${result.pid}`);
+        updateUi({ step: 'verify', pct: 92, detail: 'Waiting for the browser window…' });
+        let confirmed = null;
+        try {
+          confirmed = await waitForUpdateHealthcheck(healthcheckFile, newVersion, healthcheckToken, {
+            timeoutMs: 45000, pollMs: 250,
+            isProcessAlive: () => launched && launched.exitCode === null && launched.signalCode === null
+          });
+          log(`new browser health-check passed for v${confirmed.version}, pid ${confirmed.pid}`);
+        } catch (checkError) {
+          // Only a browser that exited counts as a failed launch. One that is still running but slow to acknowledge is kept:
+          // rolling back a healthy new version is what made updates "revert" to the old number.
+          const exited = !(launched && launched.exitCode === null && launched.signalCode === null);
+          if (exited) throw checkError;
+          log(`new browser is running but has not acknowledged yet (${checkError.message}); keeping v${newVersion}`);
+        }
       } catch (launchError) {
-        // Only the just-launched process tree is terminated. This avoids PowerShell
-        // and avoids killing a different Drift installation belonging to the user.
         if (launched && Number.isInteger(launched.pid)) {
           await run('taskkill.exe', ['/PID', String(launched.pid), '/T', '/F'], 10000);
           await waitForProcessExit(launched.pid, { timeoutMs: 12000 }).catch(() => {});
         }
-        await sleep(900);
+        await forceCloseInstalledDrift(dir, log);
+        if (inPlace || !fs.existsSync(old)) throw new Error(`The updated Drift did not open (${launchError.message}).`);
+        updateUi({ step: 'rollback', pct: 90, detail: 'The new version did not open. Restoring the previous version…' });
         log(`updated Drift did not become ready; restoring previous version: ${launchError.message}`);
+        await sleep(700);
         await removeDirRetry(dir);
         await renameRetry(old, dir);
+        swapped = false;
         throw new Error(`The update was rolled back because the new browser did not open successfully (${launchError.message}).`);
       }
     }
 
     if (waitPidArg) {
-      try { await cacheVerifiedSetup(log, app.getVersion()); }
+      try { await cacheVerifiedSetup(log, newVersion); }
       catch (cacheError) { log(`differential base cache was not refreshed: ${cacheError.message}`); }
     }
-
-    // The browser sees an apply lock while this helper is finishing. Setup removes
-    // it only after install/health-check/cache work is complete.
     try { fs.rmSync(old, { recursive: true, force: true }); }
     catch (cleanupError) { log(`old-version cleanup will be retried later: ${cleanupError.message}`); }
-    if (await run('reg', ['query', KEY])) await reg('DisplayVersion', 'REG_SZ', app.getVersion());
+    if (await run('reg', ['query', KEY])) await reg('DisplayVersion', 'REG_SZ', newVersion);
     log('update installed' + (forceRun ? ' and new browser startup health-check passed' : ''));
+    updateUi({ step: 'done', pct: 100, title: 'Drift is up to date', detail: `Now running v${newVersion}.` });
+    await sleep(1400);
+    closeUpdateWindow();
     setImmediate(() => app.exit(0));
   } catch (e) {
-    const failureMessage = String(e && e.message ? e.message : e).slice(0, 500);
+    failureMessage = String(e && e.message ? e.message : e).slice(0, 500);
     log(`update failed: ${failureMessage}`);
+    updateUi({ step: 'error', pct: 100, title: 'The update could not be installed', detail: failureMessage, error: true });
     if (waitPidArg) {
       try {
         const pendingFile = argValue('pending-file');
@@ -338,23 +428,27 @@ async function runSilentUpdate() {
         await run('taskkill.exe', ['/PID', String(launched.pid), '/T', '/F'], 10000);
         await waitForProcessExit(launched.pid, { timeoutMs: 12000 }).catch(() => {});
       }
-      if (fs.existsSync(old)) {
+      if (!swapped && fs.existsSync(old)) {
         if (fs.existsSync(dir)) await removeDirRetry(dir);
         await renameRetry(old, dir);
         log('previous Drift installation restored');
       }
-      canRelaunchPrevious = forceRun && fs.existsSync(path.join(dir, 'Drift.exe'));
+      canRelaunchPrevious = fs.existsSync(path.join(dir, 'Drift.exe'));
     } catch (rollbackError) { log(`automatic rollback failed: ${rollbackError.message}`); }
-    if (canRelaunchPrevious) {
+    // Always bring a Drift back (the previous one, or the new one when only its acknowledgement failed): never leave the user with nothing open.
+    if (canRelaunchPrevious && (forceRun || waitPidArg)) {
       try {
-        const env = { ...process.env };
-        delete env.PORTABLE_EXECUTABLE_FILE; delete env.PORTABLE_EXECUTABLE_DIR; delete env.PORTABLE_EXECUTABLE_APP_FILENAME;
-        const previous = await spawnDetachedConfirmed(spawn, path.join(dir, 'Drift.exe'), [], {
-          detached: true, stdio: 'ignore', env, cwd: dir, windowsHide: true
-        }, 20000);
-        log(`reopened previous Drift after failed update (pid ${previous.pid || 'unknown'})`);
-      } catch (relaunchError) { log(`could not reopen the previous Drift version: ${relaunchError.message}`); }
+        const previous = await launchDrift();
+        log(`reopened Drift after the failed update (pid ${previous.pid || 'unknown'})`);
+      } catch (relaunchError) { log(`could not reopen Drift: ${relaunchError.message}`); }
     }
+    // Release the lock now: the reopened Drift must not wait behind this window while the error is on screen.
+    if (lockFileArg) { try { fs.rmSync(lockFileArg, { force: true }); } catch {} }
+    if (helperReadyFileArg) { try { fs.rmSync(helperReadyFileArg, { force: true }); } catch {} }
+    // Leave the error on screen so it can be read; the user closes it (or it closes itself after a while).
+    updateClosable = true;
+    await Promise.race([new Promise((resolve) => { if (updateWin && !updateWin.isDestroyed()) updateWin.once('closed', resolve); else resolve(); }), sleep(60000)]);
+    closeUpdateWindow();
     setImmediate(() => app.exit(1));
   } finally {
     // New direct-helper updates own the lock themselves. Legacy PowerShell

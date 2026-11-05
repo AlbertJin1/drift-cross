@@ -60,5 +60,7 @@ module.exports = {
 
   // command palette
   external: '<path class="ac" d="M13.5 4.5h6v6M19.5 4.5l-8 8"/><path d="M17.5 14.5v3a2.5 2.5 0 0 1-2.5 2.5H7a2.5 2.5 0 0 1-2.5-2.5V9.5A2.5 2.5 0 0 1 7 7h3"/>',
+  // profiles
+  user:     '<circle cx="12" cy="8.6" r="3.6"/><path class="ac" d="M4.8 19.6c.7-3.6 3.5-5.6 7.2-5.6s6.5 2 7.2 5.6"/>',
   tab:      '<rect x="3.5" y="5" width="17" height="14" rx="3.5"/><path d="M3.5 9.6h17"/><circle class="fl" cx="7" cy="7.3" r=".9"/>'
 };

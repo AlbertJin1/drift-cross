@@ -28,7 +28,7 @@ else {
   if (!(setupConfig.win?.target || []).includes('portable')) fail('electron-builder.setup.json must build the portable Setup.');
   if (setupConfig.portable?.requestExecutionLevel !== 'user') fail('The Windows portable installer must run at current-user level and never request administrator access.');
 }
-for (const relative of ['src/setup/entry.js', 'src/setup/installer.js', 'src/setup/install-path.js', 'src/setup/preload.js', 'src/setup/index.html']) {
+for (const relative of ['src/setup/entry.js', 'src/setup/installer.js', 'src/setup/install-path.js', 'src/setup/preload.js', 'src/setup/index.html', 'src/setup/update.html']) {
   if (!fs.existsSync(path.join(root, relative))) fail(`Setup file is missing: ${relative}`);
 }
 // Updates come from the monitor, never GitHub: the updater must not carry a repository configuration again.
@@ -55,7 +55,9 @@ for (const relative of [
   'src/main/memory-manager.js',
   'src/main/appearance-settings.js',
   'src/main/recently-closed.js',
+  'src/main/profiles.js',
   'src/renderer/browser/ui.js',
+  'src/renderer/browser/profiles.js',
   'src/renderer/browser/responsive.js',
   'src/renderer/newtab/newtab.js',
   'src/renderer/palette/palette.js',
@@ -83,6 +85,7 @@ const syntaxFiles = [
   'src/main/memory-manager.js',
   'src/main/appearance-settings.js',
   'src/main/recently-closed.js',
+  'src/main/profiles.js',
   'src/setup/entry.js',
   'src/setup/installer.js',
   'src/setup/install-path.js',
@@ -92,10 +95,12 @@ const syntaxFiles = [
   'src/setup/update-helper-runtime.js',
   'src/preload/preload.js',
   'src/renderer/browser/ui.js',
+  'src/renderer/browser/profiles.js',
   'src/renderer/browser/responsive.js',
   'src/renderer/newtab/newtab.js',
   'src/renderer/palette/palette.js',
   'scripts/build_icons.cjs',
+  'scripts/test-profiles.cjs',
   'scripts/test-reviews.cjs',
   'scripts/test-review-prompt.cjs',
   'scripts/test-installer-launch.cjs',

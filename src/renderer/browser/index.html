@@ -50,6 +50,7 @@
       <button id="find-btn" class="icon" title="Find in page (Ctrl+F)" aria-label="Find in page"><svg data-fa="search"></svg></button>
       <button id="reader" class="icon" title="Reader mode (Ctrl+Shift+R)" aria-label="Reader mode"><svg data-fa="book"></svg></button>
       <button id="palette" class="icon" title="Command palette (Ctrl+K)" aria-label="Open command palette"><svg data-fa="terminal"></svg></button>
+      <button id="profile-btn" class="icon profile-btn" title="Profile" aria-label="Profile menu" aria-haspopup="menu" aria-expanded="false"><span id="profile-avatar" class="profile-avatar" aria-hidden="true">D</span></button>
       <button id="toolbar-overflow" class="icon" title="Menu" aria-label="Open menu" aria-haspopup="menu"><svg data-fa="more"></svg></button>
       <button id="settings" class="icon settings-button" title="Settings (Ctrl+,)" aria-label="Open settings"><svg data-fa="gear"></svg></button>
     </header>
@@ -193,6 +194,21 @@
     </div>
   </div>
 
+  <div id="profileDialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="profile-dialog-title">
+    <form id="profile-form" class="dialog-panel profile-panel" autocomplete="off" novalidate>
+      <div class="dialog-heading flex items-center justify-between gap-3"><div><h2 id="profile-dialog-title">Add profile</h2><p id="profile-dialog-sub"></p></div><button type="button" class="icon dialog-close" data-close="profileDialog" title="Close" aria-label="Close"><svg data-fa="close"></svg></button></div>
+      <div class="profile-dialog-body">
+        <div class="profile-dialog-top"><span id="profile-preview" class="profile-avatar xl" aria-hidden="true">?</span>
+          <label class="profile-name-field" for="profile-name"><span>Name</span><input id="profile-name" class="page-input" type="text" maxlength="40" placeholder="Work, Personal, School…" spellcheck="false" autocomplete="off"></label>
+        </div>
+        <div class="profile-color-block"><span class="profile-color-label" id="profile-color-label">Color</span><div id="profile-colors" class="profile-colors" role="radiogroup" aria-labelledby="profile-color-label"></div></div>
+        <label id="profile-open-wrap" class="profile-open-wrap"><input id="profile-open" type="checkbox" checked><span>Open the new profile in its own window</span></label>
+        <p id="profile-error" class="ext-error hidden" role="alert"></p>
+      </div>
+      <div class="dialog-footer ext-footer"><button type="button" class="secondary-button" data-close="profileDialog">Cancel</button><button id="profile-submit" type="submit" class="primary-button">Create</button></div>
+    </form>
+  </div>
+
   <div id="extensionConfirmDialog" class="dialog-overlay hidden" role="alertdialog" aria-modal="true" aria-labelledby="ext-confirm-title" aria-describedby="ext-confirm-desc">
     <div class="dialog-panel ext-confirm-panel">
       <div class="ext-confirm-head">
@@ -210,5 +226,6 @@
   <script src="responsive.js"></script>
   <script src="pins.js"></script>
   <script src="menu.js"></script>
+  <script src="profiles.js"></script>
 </body>
 </html>

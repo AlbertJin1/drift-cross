@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Updating Drift</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<style>
+:root{--a:#8b5cf6;--b:#63edda;--bg:#0b1020;--fg:#eef1ff;--mut:#98a0c4;--line:rgba(255,255,255,.12);--err:#ff7d8d}
+*{box-sizing:border-box;margin:0}html,body{height:100%}
+body{font:14px/1.5 "Segoe UI Variable","Segoe UI",system-ui,sans-serif;color:var(--fg);background:var(--bg);overflow:hidden;user-select:none}
+#card{position:absolute;inset:0;border:1px solid var(--line);padding:28px 32px;display:flex;flex-direction:column;-webkit-app-region:drag;
+  background:radial-gradient(120% 90% at 100% 0%,rgba(139,92,246,.22),transparent 60%),radial-gradient(90% 80% at 0% 100%,rgba(99,237,218,.12),transparent 60%),var(--bg)}
+.top{display:flex;align-items:center;gap:14px;margin-bottom:22px}
+.logo{width:44px;height:44px;flex:none}
+.logo svg{width:100%;height:100%;overflow:visible;animation:fl 3.2s ease-in-out infinite}
+@keyframes fl{50%{transform:translateY(-3px)}}
+.k{letter-spacing:.28em;text-transform:uppercase;font-size:10.5px;color:var(--b);font-weight:600}
+h1{font-size:21px;font-weight:700;letter-spacing:-.02em;line-height:1.2;margin-top:2px}
+#detail{color:var(--mut);margin:2px 0 16px;min-height:42px;font-size:13.5px;word-break:break-word}
+.track{height:6px;border-radius:9px;background:rgba(255,255,255,.08);overflow:hidden}
+.track b{display:block;height:100%;width:2%;border-radius:9px;background:linear-gradient(90deg,var(--b),var(--a));transition:width .35s ease}
+.track.busy b{background-size:200% 100%;animation:sh 1.6s linear infinite}
+@keyframes sh{from{background-position:200% 0}to{background-position:0 0}}
+.row{display:flex;justify-content:space-between;align-items:center;margin-top:10px;color:var(--mut);font-size:12px}
+.steps{display:flex;gap:6px;margin-top:auto}
+.steps i{flex:1;height:3px;border-radius:3px;background:rgba(255,255,255,.1);transition:.4s}.steps i.on{background:var(--b)}
+.hint{margin-top:10px;color:var(--mut);font-size:11.5px}
+button{-webkit-app-region:no-drag;display:none;margin-top:14px;align-self:flex-start;border:0;border-radius:999px;padding:10px 24px;font:600 13px inherit;font-family:inherit;color:#fff;cursor:pointer;background:linear-gradient(100deg,var(--a),#5b8def)}
+.error h1{color:var(--err)}.error .track b{background:var(--err)}.error button{display:block}
+.done .track b{background:linear-gradient(90deg,var(--b),#7ef5a8)}
+</style></head><body>
+<div id="card">
+  <div class="top">
+    <div class="logo"><svg viewBox="40 90 380 330"><defs><linearGradient id="w" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#64f0de"/><stop offset=".55" stop-color="#4dc7f4"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs>
+      <g fill="none" stroke="url(#w)" stroke-width="19" stroke-linecap="round"><path d="M65 192C105 171 143 168 184 180"/><path d="M53 247C98 223 142 220 190 233"/><path d="M75 302C112 283 151 281 192 292"/></g>
+      <path d="M174 112H274C356 112 408 167 408 256 408 345 356 400 274 400H174Z" fill="#fff"/><path d="M235 173H269C321 173 350 204 350 256 350 308 321 339 269 339H235Z" fill="#0b1020"/><circle cx="395" cy="112" r="14" fill="#63edda"/></svg></div>
+    <div><div class="k">Drift Browser</div><h1 id="title">Updating Drift</h1></div>
+  </div>
+  <div id="detail">Getting ready…</div>
+  <div class="track busy" id="track"><b id="bar"></b></div>
+  <div class="row"><span id="step">Starting</span><span id="pct">0%</span></div>
+  <div class="steps" id="steps"><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="hint" id="hint">Please keep this window open. Drift will reopen automatically.</div>
+  <button id="close" onclick="setup.closeUpdate()">Close</button>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const ORDER=['close','copy','swap','launch','verify'];
+const LABEL={wait:'Starting',close:'Closing Drift',copy:'Installing files',swap:'Switching versions',launch:'Opening Drift',verify:'Checking the new version',rollback:'Restoring previous version',done:'Finished',error:'Failed'};
+setup.onUpdateState(s=>{
+  if(s.title)$('title').textContent=s.title;
+  if(s.detail!==undefined)$('detail').textContent=s.detail;
+  const pct=Math.max(2,Math.min(100,Math.round(s.pct||0)));
+  $('bar').style.width=pct+'%';$('pct').textContent=pct+'%';$('step').textContent=LABEL[s.step]||'Working';
+  const idx=ORDER.indexOf(s.step);
+  document.querySelectorAll('#steps i').forEach((e,i)=>e.classList.toggle('on',s.step==='done'||s.step==='error'?s.step==='done':(idx<0?false:i<=idx)));
+  const card=$('card');card.classList.toggle('error',!!s.error);card.classList.toggle('done',s.step==='done');
+  $('track').classList.toggle('busy',s.step!=='done'&&!s.error);
+  $('hint').textContent=s.error?'Drift has been reopened. Details are saved in %APPDATA%\\Drift\\Updates\\updater.log':s.step==='done'?'':'Please keep this window open. Drift will reopen automatically.';
+});
+</script></body></html>

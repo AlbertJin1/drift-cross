@@ -1,4 +1,27 @@
-# Drift v1.3.17 — Windows Update Helper Reliability
+## 1.3.19 — Browser Profiles
+
+- Added browser profiles. Each profile is a separate browsing identity with its own cookies and site sign-ins, local storage, cache, permissions, bookmarks, history, downloads list, settings, tabs, recently closed tabs and extensions. Isolation comes from giving each profile its own Chromium data folder, so nothing is shared by accident.
+- New profile button (colored initial) in the toolbar. Its menu shows the current profile, switches to any other profile, adds a profile and opens Manage profiles.
+- New Settings > Profiles page: add, rename, recolor, open and delete profiles. Names are cleaned and must be unique; up to 20 profiles.
+- Opening a profile starts it in its own window. If it is already open, its window is brought to the front instead of starting a second copy.
+- Deleting a profile erases its data from disk. The Default profile cannot be deleted, the profile you are using cannot be deleted, and a profile that is open in another window must be closed first. Deletion is crash-safe: an interrupted delete is finished at the next start.
+- Starting Drift normally opens the profile you used last; `Drift.exe --profile=<id>` opens a specific one. The window title shows the profile name once more than one exists.
+- Existing installs keep everything: the current data becomes the Default profile in place, with no migration or copying.
+- Updates, the anonymous install identity and review reminders are shared by all profiles. An update is installed only when no other profile window is open, and only one open profile sends usage status, so a multi-profile install still counts as one install.
+- Added the `user` glyph, `npm run test:profiles` (16 tests) and the new files to the project preflight.
+- Bumped the application and lockfile version to 1.3.19.
+
+## 1.3.18 — Update Window and Reliable Restart
+
+- Added an "Updating Drift" window. Restart to update now shows each step (closing Drift, installing files, switching versions, opening the new browser) with a progress bar, and shows the real error with a Close button if something fails.
+- Fixed Drift reopening invisibly after an update: the helper launched Drift with a hidden-window flag, so Windows hid the browser window and left a process in Task Manager. Drift is now started normally.
+- Fixed the update waiting on a Drift process that never exited: the helper now waits 10 seconds, then ends the old Drift process tree (including VPN/child processes) so the install folder is free. Drift itself also force-exits 5 seconds after Restart to update.
+- If Windows keeps a file locked and the folder swap fails, Setup now copies the new files over the install folder instead of giving up and keeping the old version.
+- A new browser that is running but slow to acknowledge startup is no longer rolled back; only a browser that actually exits triggers the rollback to the previous version.
+- The update lock is released before an error is shown, so the reopened browser never waits behind the helper.
+- Bumped the application version to 1.3.18.
+
+## 1.3.17 — Windows Update Helper Reliability
 
 - Removed PowerShell from the manual Restart to update path. Drift now launches the SHA-256-verified staged `Drift-Setup.exe` directly as a hidden, detached helper.
 - The Setup process writes a one-time readiness token after its Electron runtime initializes, then waits for the current Drift PID to exit normally before replacing the installation.

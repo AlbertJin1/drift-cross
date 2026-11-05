@@ -21,6 +21,9 @@ for %%A in (%*) do (
 )
 cd /d "%~dp0"
 
+REM Pick the upload route FIRST, so the choice is never skipped by a later step. Pass auto, public or local to skip the question.
+if not defined TARGET if not "%NOUPLOAD%"=="1" call :choose_route
+
 REM build_publish.bat normally waits for a key at the end; release.bat continues straight on to the upload.
 set "DRIFT_NO_PAUSE=1"
 call "%~dp0build_publish.bat"
@@ -56,38 +59,60 @@ if "%NOUPLOAD%"=="1" (
     exit /b 0
 )
 
-if not defined TARGET (
-    echo ============================================================
-    echo Choose the Drift Monitor upload route:
-    echo   1. Public zrok URL
-    echo   2. Local Monitor - http://192.168.254.110:8080/pdfstudio-monitor
-    echo   3. Automatic - local first, then public fallback ^(recommended^)
-    echo ============================================================
-    set /p "CHOICE=Choose 1, 2, or 3 [3]: "
-    if "!CHOICE!"=="1" set "TARGET=public"
-    if "!CHOICE!"=="2" set "TARGET=local"
-    if "!CHOICE!"=="3" set "TARGET=auto"
-    if not defined TARGET set "TARGET=auto"
-)
-
+set "ROUTE_NAME=!TARGET!"
+:upload
 echo.
 echo ============================================================
-echo Uploading to Drift Monitor using target: !TARGET!
+if /i "!TARGET!"=="public" (echo Uploading to Drift Monitor through zrok ^(public URL^)) else if /i "!TARGET!"=="local" (echo Uploading to Drift Monitor on the LAN ^(local^)) else (echo Uploading to Drift Monitor: automatic ^(local first, then zrok^))
 echo ============================================================
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0publish_to_monitor.ps1" -Target "!TARGET!" !EXTRA_ARGS!
-if errorlevel 1 (
-    echo.
-    echo The exe was built but NOT uploaded.
-    echo Read the "UPLOAD FAILED" line above: the Monitor's own error message is printed there.
-    echo Retry WITHOUT rebuilding:
-    echo     powershell -ExecutionPolicy Bypass -File publish_to_monitor.ps1 -Target local
-    echo Ensure serve.bat is running on 192.168.254.110:8080 and the Monitor API key is in monitor-key.txt.
-    echo Or upload %~dp0publish\Drift-Setup.exe by hand at %MONITOR%
-    explorer /select,"%~dp0publish\Drift-Setup.exe"
-    pause
-    exit /b 1
-)
+if not errorlevel 1 goto :uploaded
 
 echo.
+echo The exe was built but NOT uploaded.
+echo Read the "UPLOAD FAILED" line above: the Monitor's own error message is printed there.
+echo   - zrok route : needs the public zrok share to be running.
+echo   - local route: needs serve.bat running on 192.168.254.110:8080.
+echo   - Both routes need the Monitor API key in monitor-key.txt next to this file.
+echo.
+echo   R = retry the same route          O = try the other route ^(zrok / local^)
+echo   C = choose the route again        Q = quit ^(upload by hand at %MONITOR%^)
+choice /c ROCQ /n /m "Choose R, O, C or Q: "
+if errorlevel 4 goto :upload_quit
+if errorlevel 3 (call :choose_route & goto :upload)
+if errorlevel 2 goto :other_route
+goto :upload
+
+:other_route
+if /i "!TARGET!"=="public" (set "TARGET=local") else (set "TARGET=public")
+goto :upload
+
+:upload_quit
+explorer /select,"%~dp0publish\Drift-Setup.exe"
+pause
+exit /b 1
+
+:uploaded
+echo.
 echo Release page: %MONITOR%
+exit /b 0
+
+:choose_route
+echo.
+echo ============================================================
+echo Choose where to upload this Drift release:
+echo   1. zrok      - public URL, works from anywhere
+echo   2. Local     - Monitor on the LAN, http://192.168.254.110:8080/pdfstudio-monitor
+echo   3. Automatic - local first, then zrok as the fallback ^(recommended^)
+echo ============================================================
+choice /c 123 /n /m "Choose 1, 2 or 3: "
+if errorlevel 3 goto :route_auto
+if errorlevel 2 goto :route_local
+set "TARGET=public"
+exit /b 0
+:route_local
+set "TARGET=local"
+exit /b 0
+:route_auto
+set "TARGET=auto"
 exit /b 0

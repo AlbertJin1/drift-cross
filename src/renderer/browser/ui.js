@@ -1038,6 +1038,7 @@ function updatePanelMarkup() {
 
 function renderSettingsContent() {
   const prefs = state.settings || {};
+  if (currentSettingsSection === 'profiles' && typeof ensureProfilesLoaded === 'function') ensureProfilesLoaded();
   const sections = {
     general: {
       title: 'General', intro: 'Control how Drift starts and behaves.', cards: [
@@ -1053,6 +1054,9 @@ function renderSettingsContent() {
           state.canReportUsage ? settingRow('Share usage status', 'Let the developer see that Drift is open: its version, your Windows version and PC name. Never the sites you visit, your tabs, searches or history.', switchSetting('usage-reports-setting', prefs.usageReports !== false)) : ''
         ].join('')]
       ]
+    },
+    profiles: {
+      title: 'Profiles', intro: 'Keep work, personal and shared browsing completely separate.', cards: typeof profilesSettingsCards === 'function' ? profilesSettingsCards() : []
     },
     appearance: {
       title: 'Appearance', intro: 'Personalize Drift’s colors, typography, spacing, tabs, and motion.', cards: [
@@ -1246,6 +1250,7 @@ function pageNavigation() {
     downloads: '<svg data-fa="download"></svg>',
     extensions: '<svg data-fa="puzzle"></svg>',
     general: '<svg data-fa="sliders"></svg>',
+    profiles: '<svg data-fa="user"></svg>',
     appearance: '<svg data-fa="palette"></svg>',
     newtab: '<svg data-fa="newtab"></svg>',
     tabs: '<svg data-fa="tab"></svg>',
@@ -1254,7 +1259,7 @@ function pageNavigation() {
     about: '<svg data-fa="info"></svg>'
   };
   const links = [['settings', 'Settings'], ['bookmarks', 'Bookmarks'], ['history', 'History'], ['downloads', 'Downloads'], ['extensions', 'Extensions']];
-  const settingsLinks = [['general','General'],['appearance','Appearance'],['newtab','New tab'],['tabs','Tabs'],['search','Search'],['privacy','Privacy'],['downloads','Downloads'],['about','About']];
+  const settingsLinks = [['general','General'],['profiles','Profiles'],['appearance','Appearance'],['newtab','New tab'],['tabs','Tabs'],['search','Search'],['privacy','Privacy'],['downloads','Downloads'],['about','About']];
   const subnav = state.internalPage === 'settings' ? `<div class="sidebar-caption settings-caption">SETTINGS</div><nav class="page-nav settings-subnav">${settingsLinks.map(([key,label]) => `<button class="page-nav-item setting-nav-item ${currentSettingsSection === key ? 'active' : ''}" data-setting-section="${key}"><span class="page-nav-icon">${icons[key]}</span>${label}</button>`).join('')}</nav>` : '';
   return `<div class="page-sidebar-brand"><img src="../shared/assets/drift-mark.svg" alt=""><div class="brand-lockup"><span class="wm" role="img" aria-label="Drift">Dr<span class="wm-i" aria-hidden="true">ı</span>ft</span><div class="brand-sub"><span>Browser</span></div></div></div>
     <div class="page-sidebar-scroll"><div class="sidebar-caption">LIBRARY & PREFERENCES</div>
@@ -1263,7 +1268,7 @@ function pageNavigation() {
 }
 function currentPageRenderKey() {
   const page = state.internalPage || '';
-  if (page === 'settings') return JSON.stringify([page, currentSettingsSection, state.settings, state.adBlockEnabled, state.popupBlockEnabled, currentSettingsSection === 'privacy' ? state.blocked : 0, currentSettingsSection === 'privacy' ? state.blockedPopups : 0, state.canLaunchAtLogin, state.version, state.electronVersion, state.chromiumVersion, state.profileDirectory, state.updateStatus, state.canAutoUpdate]);
+  if (page === 'settings') return JSON.stringify([page, currentSettingsSection, state.settings, state.adBlockEnabled, state.popupBlockEnabled, currentSettingsSection === 'privacy' ? state.blocked : 0, currentSettingsSection === 'privacy' ? state.blockedPopups : 0, state.canLaunchAtLogin, state.version, state.electronVersion, state.chromiumVersion, state.profileDirectory, state.updateStatus, state.canAutoUpdate, state.profile, typeof PM !== 'undefined' ? PM.rev : 0]);
   if (page === 'bookmarks') return JSON.stringify([page, bookmarkFilter, bookmarkFolderFilter, state.bookmarks]);
   if (page === 'history') return JSON.stringify([page, historyFilter, state.history]);
   if (page === 'downloads') return JSON.stringify([page, state.downloads]);
@@ -1307,6 +1312,7 @@ function render() {
   $('star').setAttribute('aria-pressed', String(!!state.bookmarked));
   renderBookmarkBar();
   renderProtection();
+  if (typeof syncProfileButton === 'function') syncProfileButton();
   renderInternalPage();
   renderFind();
 }
@@ -1373,7 +1379,8 @@ function overlayNeeded() {
   return !!document.querySelector('.dialog-overlay:not(.hidden)')
     || !contextMenu.classList.contains('hidden')
     || TL.open
-    || (typeof DM !== 'undefined' && DM.open);
+    || (typeof DM !== 'undefined' && DM.open)
+    || (typeof PM !== 'undefined' && PM.open);
 }
 function syncOverlay(forceOpen = false) {
   const need = overlayNeeded();
@@ -1546,7 +1553,12 @@ function refreshCurrentPage() { renderInternalPage(); }
 
 // Main-process events are allow-listed by preload.js.
 drift.on('state', (next) => { state = next; render(); });
-drift.on('focus-address', () => { $('addr').focus(); $('addr').select(); });
+drift.on('focus-address', (options) => {
+  const addr = $('addr');
+  // A "soft" request only re-focuses (the page stole focus): never re-select, so text already typed is not overwritten.
+  if (options && options.soft && document.activeElement === addr) { addr.focus(); return; }
+  addr.focus(); addr.select();
+});
 // New tab page took focus: empty the address bar and drop its focus/selection.
 drift.on('reset-address', () => { $('addr').value = ''; $('addr').blur(); });
 drift.on('clear-data:show', () => openClearData());
@@ -2045,20 +2057,32 @@ $('clear-submit').addEventListener('click', submitClearData);
     drift.manage('bookmark:reorder', sourceUrl, targetUrl, !!after);
   }
 
+  // The card stays exactly where it was picked up: the point of the bookmark that was grabbed stays under the cursor.
+  // In the bookmark bar it slides along the bar (the browser chrome is only as tall as its bars, so anything lower would be
+  // clipped by the page view) and follows the pointer vertically by only a couple of pixels, which reads as "lifted".
   function positionPreview(active, x, y) {
     if (!active.preview) return;
-    const margin = 8;
+    const margin = 4;
     const width = active.previewWidth;
     const height = active.previewHeight;
-    const left = Math.max(margin, Math.min(window.innerWidth - width - margin, x + 14));
-    const top = Math.max(margin, Math.min(window.innerHeight - height - margin, y + 16));
-    active.preview.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+    const left = Math.max(margin, Math.min(window.innerWidth - width - margin, x - active.grabX));
+    let top;
+    if (active.horizontal) {
+      const nudge = Math.max(-3, Math.min(3, (y - active.startY) * 0.25));
+      top = active.homeTop + nudge - 1;
+    } else {
+      top = Math.max(margin, Math.min(window.innerHeight - height - margin, y - active.grabY));
+    }
+    active.preview.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
   }
 
   function startVisuals(active, event) {
     const rect = active.source.getBoundingClientRect();
     active.previewWidth = Math.max(44, Math.ceil(rect.width));
     active.previewHeight = Math.max(28, Math.ceil(rect.height));
+    active.homeTop = rect.top;
+    active.grabX = Math.max(0, Math.min(rect.width, active.startX - rect.left));
+    active.grabY = Math.max(0, Math.min(rect.height, active.startY - rect.top));
 
     const preview = active.source.cloneNode(true);
     preview.classList.remove('bm-dragging', 'bm-drop-before', 'bm-drop-after', 'bm-hidden');
@@ -2081,6 +2105,9 @@ $('clear-submit').addEventListener('click', submitClearData);
     active.preview = preview;
     active.placeholder = placeholder;
     document.body.append(preview);
+    // The slot takes the bookmark's place straight away and the original is taken out of the layout, so there is one
+    // dashed slot (where it will land) instead of a ghost of the original plus a second slot.
+    active.source.parentNode?.insertBefore(placeholder, active.source);
     active.source.classList.add('bm-dragging');
     document.body.classList.add('bookmark-reordering');
     document.body.style.userSelect = 'none';
@@ -2089,18 +2116,13 @@ $('clear-submit').addEventListener('click', submitClearData);
 
   function movePlaceholder(active, target) {
     clearMarks();
-    if (!target?.item || !target.item.parentNode) {
-      active.placeholder?.remove();
-      active.target = null;
-      active.after = false;
-      return;
-    }
+    // Between items (or outside the bar) the slot stays where it last was, so the bar never jumps back and forth.
+    if (!target?.item || !target.item.parentNode) return;
     const parent = target.item.parentNode;
     const before = target.after ? target.item.nextSibling : target.item;
     if (active.placeholder.parentNode !== parent || active.placeholder.nextSibling !== before) {
       parent.insertBefore(active.placeholder, before);
     }
-    target.item.classList.add(target.after ? 'bm-drop-after' : 'bm-drop-before');
     active.target = target.item;
     active.after = !!target.after;
   }

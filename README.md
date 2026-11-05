@@ -14,6 +14,7 @@ MIT licensed. Node.js 20+ required to build.
 - **Data:** reorderable bookmarks with folders, real website favicons, a quick-access bar, date-grouped history with site icons, downloads manager, and clear browsing data.
 - **Privacy:** network-level ad/tracker blocking, a separate unsolicited pop-up blocker, a global switch and per-site ad-block exceptions.
 - **Extensions:** Chrome Web Store (Manifest V3) and unpacked extensions.
+- **Profiles:** separate browsing identities (work, personal, school...), each with its own sign-ins, bookmarks, history, settings and extensions.
 - **Customisation:** light, dark or system appearance, eight accent themes plus custom accent colors, interface font and text scale, density, corner style, tab appearance and width, chrome tint, motion controls, bookmark labels, New Tab backgrounds, layouts and tile sizes.
 - **Performance:** idle background tabs are discarded under a memory-aware policy, tab creation is lazy, and disk writes are coalesced and atomic.
 - **Updates:** Windows releases use verified incremental binary-chunk updates when a compatible base installer is cached, with compressed ZIP and raw-installer fallbacks.
@@ -109,13 +110,24 @@ Open *Extensions* (`Ctrl/Cmd+Shift+E`), paste a Chrome Web Store link or 32-lett
 
 Electron implements a subset of the Chrome extension APIs, so compatibility varies. Powered by [`electron-chrome-web-store`](https://www.npmjs.com/package/electron-chrome-web-store) (MIT).
 
+## Profiles
+
+A profile is a completely separate browsing identity: its own cookies and site sign-ins, local storage, cache, permissions, bookmarks, history, downloads list, settings, tabs and extensions. Use the colored profile button in the toolbar to switch, or **Settings > Profiles** to add, rename, recolor and delete them (up to 20).
+
+- Each profile runs in its own Drift window (its own process). Opening a profile that is already open brings its window to the front.
+- Isolation comes from a separate Chromium data folder per profile, not from filtering: `%APPDATA%\Drift` holds the **Default** profile (so existing data needs no migration) and `%APPDATA%\Drift\Profiles\<id>` holds every other profile. `%APPDATA%\Drift\profiles.json` lists them.
+- Start Drift normally to open the profile you used last, or run `Drift.exe --profile=<id>` for a specific one (in development: `npm start -- --profile=<id>`).
+- Deleting a profile erases its folder. The Default profile, the profile in use and a profile that is open in another window cannot be deleted.
+- Shared by all profiles: the update files, the anonymous install id and the review reminder. An update installs only when no other profile window is open, and only one open profile reports usage status.
+- Profile logic lives in `src/main/profiles.js` (tested by `npm run test:profiles`); the toolbar menu, dialog and settings page are in `src/renderer/browser/profiles.js`.
+
 ## Project layout
 
 ```text
 build/                 app icons
 scripts/               build, icon generation, project check and tests
 src/
-  main/                browser core, updater, telemetry, storage,
+  main/                browser core, profiles, updater, telemetry, storage,
                        memory manager, shortcuts, extensions
   preload/             allow-listed renderer <-> main IPC bridge
   renderer/
