@@ -1,3 +1,13 @@
+## 1.3.20 — Profile Fixes
+
+- Fixed "Enter a name for the profile." appearing even though a name was typed: the toolbar's profile label and the Add profile name box shared the same element id, so Create read the wrong element.
+- Each profile's data folder in AppData is now named after the profile (`%APPDATA%\Drift\Profiles\<Name>`) and is renamed when the profile is renamed. A `profile-info.json` inside the folder records the profile's id, name and colour and updates instantly. A folder is never moved while its profile is open; it follows as soon as the profile is closed. Profiles made by earlier builds are moved to name-based folders at the next start.
+- Each profile now has its own accurate taskbar icon: the Drift icon with a badge in the profile's colour and initial, applied to the running window and to the pinned button, and refreshed when the profile is renamed or recoloured, including from another open profile window. Only the default profile alone shows the plain Drift icon.
+- Open profile windows now notice renames, colour changes and added or removed profiles made in other windows (title, toolbar and taskbar icon update within a few seconds).
+- `npm run test:profiles` now has 25 tests.
+- Existing 1.3.19 installs keep all profile data: profiles are matched by their stable id, and their folders are renamed to the profile name automatically on first start (nothing is copied or deleted).
+- Bumped the application and lockfile version to 1.3.20.
+
 ## 1.3.19 — Browser Profiles
 
 - Added browser profiles. Each profile is a separate browsing identity with its own cookies and site sign-ins, local storage, cache, permissions, bookmarks, history, downloads list, settings, tabs, recently closed tabs and extensions. Isolation comes from giving each profile its own Chromium data folder, so nothing is shared by accident.
@@ -9,11 +19,6 @@
 - Existing installs keep everything: the current data becomes the Default profile in place, with no migration or copying.
 - Updates, the anonymous install identity and review reminders are shared by all profiles. An update is installed only when no other profile window is open, and only one open profile sends usage status, so a multi-profile install still counts as one install.
 - Added the `user` glyph, `npm run test:profiles` (16 tests) and the new files to the project preflight.
-- Fixed "Enter a name for the profile." appearing even though a name was typed: the toolbar's profile label and the Add profile name box shared the same element id, so Create read the wrong element.
-- Each profile's data folder in AppData is now named after the profile (`%APPDATA%\Drift\Profiles\<Name>`) and is renamed when the profile is renamed. A `profile-info.json` inside the folder records the profile's id, name and colour and updates instantly. A folder is never moved while its profile is open; it follows as soon as the profile is closed. Profiles made by earlier builds are moved to name-based folders at the next start.
-- Each profile now has its own accurate taskbar icon: the Drift icon with a badge in the profile's colour and initial, applied to the running window and to the pinned button, and refreshed when the profile is renamed or recoloured, including from another open profile window. Only the default profile alone shows the plain Drift icon.
-- Open profile windows now notice renames, colour changes and added or removed profiles made in other windows (title, toolbar and taskbar icon update within a few seconds).
-- `npm run test:profiles` now has 25 tests.
 - Bumped the application and lockfile version to 1.3.19.
 
 ## 1.3.18 — Update Window and Reliable Restart
