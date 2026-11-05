@@ -8,9 +8,9 @@
   // ------------------------------------------------------------ theme
   // The browser passes the user's appearance + accent in the URL. "system"
   // (or anything unrecognised) follows the OS and updates live.
-  const COLOR_THEMES = ['violet', 'ocean', 'forest', 'rose', 'sunset', 'indigo', 'graphite', 'mint'];
+  const COLOR_THEMES = ['tide', 'violet', 'ocean', 'forest', 'rose', 'sunset', 'indigo', 'graphite', 'mint'];
   const colorTheme = params.get('theme');
-  if (COLOR_THEMES.includes(colorTheme)) root.dataset.colorTheme = colorTheme;
+  root.dataset.colorTheme = COLOR_THEMES.includes(colorTheme) ? colorTheme : 'tide';
   const mode = params.get('mode');
   const systemLight = window.matchMedia('(prefers-color-scheme: light)');
   const applyMode = () => { root.dataset.theme = mode === 'light' || mode === 'dark' ? mode : (systemLight.matches ? 'light' : 'dark'); };
@@ -20,16 +20,18 @@
   if (/^#[0-9a-f]{6}$/i.test(accent)) {
     const value = accent.slice(1);
     const darker = [0, 2, 4].map((offset) => Math.round(parseInt(value.slice(offset, offset + 2), 16) * .78).toString(16).padStart(2, '0')).join('');
+    const lum = [0, 2, 4].map((o) => { const c = parseInt(value.slice(o, o + 2), 16) / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
     root.style.setProperty('--accent', accent);
     root.style.setProperty('--accent-strong', `#${darker}`);
+    root.style.setProperty('--on-accent', 0.2126 * lum[0] + 0.7152 * lum[1] + 0.0722 * lum[2] > 0.36 ? '#14130b' : '#ffffff');
   }
   const safeChoice = (value, allowed, fallback) => allowed.includes(value) ? value : fallback;
-  root.dataset.background = safeChoice(params.get('ntbg'), ['aurora', 'midnight', 'paper', 'forest', 'sunset'], 'aurora');
+  root.dataset.background = safeChoice(params.get('ntbg'), ['tide', 'aurora', 'midnight', 'paper', 'forest', 'sunset'], 'tide');
   root.dataset.layout = safeChoice(params.get('ntlayout'), ['centered', 'wide', 'compact'], 'centered');
   root.dataset.tileSize = safeChoice(params.get('nttile'), ['small', 'medium', 'large'], 'medium');
   root.dataset.motion = safeChoice(params.get('ntmotion'), ['full', 'reduced', 'off'], 'full');
-  const fontFamily = { system: 'system-ui, -apple-system, "Segoe UI", sans-serif', inter: 'Inter, system-ui, sans-serif', segoe: '"Segoe UI", system-ui, sans-serif', arial: 'Arial, Helvetica, sans-serif' };
-  root.style.setProperty('--newtab-font', fontFamily[params.get('ntfont')] || fontFamily.system);
+  const fontFamily = { drift: '"Drift Sans", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif', system: 'system-ui, -apple-system, "Segoe UI", sans-serif', inter: 'Inter, system-ui, sans-serif', segoe: '"Segoe UI", system-ui, sans-serif', arial: 'Arial, Helvetica, sans-serif' };
+  root.style.setProperty('--newtab-font', fontFamily[params.get('ntfont')] || fontFamily.drift);
   const newTabScale = [90, 95, 100, 105, 110, 115, 120].includes(Number(params.get('ntscale'))) ? Number(params.get('ntscale')) : 100;
   const scaleFactor = newTabScale / 100;
   root.style.setProperty('--newtab-scale', String(scaleFactor));
@@ -94,6 +96,8 @@
   // ------------------------------------------------------------ greeting + clock
   const showClock = params.get('clock') !== '0';
   $('clock-wrap').hidden = !showClock;
+  $('headline').hidden = showClock;
+  $('tideline').hidden = !showClock;
   function tick() {
     const now = new Date();
     const h = now.getHours();
@@ -104,6 +108,8 @@
     $('clock').textContent = parts.filter((p) => p.type !== 'dayPeriod').map((p) => p.value).join('').trim();
     $('clock-period').textContent = period ? period.value : '';
     root.dataset.part = h < 5 ? 'night' : h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
+    const dayFraction = (h * 3600 + now.getMinutes() * 60 + now.getSeconds()) / 86400;
+    $('tideline').style.setProperty('--now', `${(dayFraction * 100).toFixed(2)}%`);
   }
   tick();
   setInterval(tick, 15000);
@@ -147,15 +153,24 @@
     }
 
     $('sc-title').textContent = shortcutMode === 'bookmarks' ? 'Bookmarks' : (data.s.length ? 'Most visited' : 'Quick access');
-    $('sc-hint').textContent = shortcutMode === 'bookmarks' ? 'Your most recent bookmarks' : (data.s.length ? 'Based on your browsing history' : 'Your essentials, one click away');
+    $('sc-hint').textContent = shortcutMode === 'bookmarks' ? 'Newest first' : (data.s.length ? 'From your history on this device' : 'Add your own with the + button');
 
     shownTiles = tiles;
     const nodes = tiles.map((tile, idx) => {
       const wrap = document.createElement('div'); wrap.className = 'tile-wrap'; wrap.draggable = true; wrap.dataset.idx = String(idx);
       const link = document.createElement('a'); link.className = 'tile'; link.draggable = false; link.href = tile.url; link.title = tile.title + ' — ' + hostOf(tile.url);
       const mark = document.createElement('span'); mark.className = 'tile-mark' + (tile.brand ? ' brand-' + tile.brand : '');
-      mark.textContent = (tile.title.match(/[\p{L}\p{N}]/u) || ['•'])[0].toUpperCase();
-      if (!tile.brand) { const h = hueOf(hostOf(tile.url)); mark.style.background = `linear-gradient(145deg, hsl(${h} 62% 52%), hsl(${(h + 26) % 360} 62% 42%))`; }
+      const letter = (tile.title.match(/[\p{L}\p{N}]/u) || ['•'])[0].toUpperCase();
+      mark.textContent = letter;
+      if (!tile.brand) {
+        const h = hueOf(hostOf(tile.url)); mark.style.background = `hsl(${h} 42% 40%)`;
+        // The site's own icon when it has one; the coloured initial stays underneath if it does not load.
+        try {
+          const icon = new Image(); icon.alt = ''; icon.decoding = 'async'; icon.referrerPolicy = 'no-referrer';
+          icon.onload = () => { if (icon.naturalWidth > 1) { mark.textContent = ''; mark.classList.add('has-icon'); mark.style.background = ''; mark.append(icon); } };
+          icon.src = new URL('/favicon.ico', tile.url).href;
+        } catch { /* keep the initial */ }
+      }
       const text = document.createElement('span'); text.className = 'tile-text';
       const label = document.createElement('span'); label.className = 'tile-label'; label.textContent = tile.title;
       const host = document.createElement('span'); host.className = 'tile-host'; host.textContent = hostOf(tile.url);
@@ -181,7 +196,7 @@
       const mark = document.createElement('span'); mark.className = 'tile-mark'; mark.innerHTML = ICONS.plus;
       const text = document.createElement('span'); text.className = 'tile-text';
       const label = document.createElement('span'); label.className = 'tile-label'; label.textContent = 'Add shortcut';
-      const host = document.createElement('span'); host.className = 'tile-host'; host.textContent = 'Pin a favourite site';
+      const host = document.createElement('span'); host.className = 'tile-host'; host.textContent = 'Pin a site you visit often';
       text.append(label, host);
       add.append(mark, text); wrap.append(add); nodes.push(wrap);
       add.addEventListener('click', openPinDialog);
@@ -263,7 +278,7 @@
   function setEngine(id) {
     engine = id;
     $('engine-name').textContent = ENGINES[id].name;
-    input.placeholder = 'Search ' + ENGINES[id].name + ' or enter a website address';
+    input.placeholder = 'Search ' + ENGINES[id].name + ' or type a web address';
     engineBtn.title = 'Search engine: ' + ENGINES[id].name;
   }
   setEngine(engine);

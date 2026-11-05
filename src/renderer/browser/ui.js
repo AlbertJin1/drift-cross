@@ -2,8 +2,8 @@ const $ = (id) => document.getElementById(id);
 let state = {
   tabs: [], url: '', internalPage: '', bookmarks: [], history: [], downloads: [], extensions: [],
   blockedHosts: [], blocked: 0, blockedPopups: 0, adBlockEnabled: true, popupBlockEnabled: true,
-  settings: { appearance: 'system', colorTheme: 'violet', appearanceOptions: { accentColor: '', density: 'comfortable', fontScale: 100, fontFamily: 'system', cornerStyle: 'soft', tabStyle: 'underline', tabWidth: 'balanced', motion: 'full', chromeTint: 'balanced', bookmarkDisplay: 'labels', newTabBackground: 'aurora', newTabLayout: 'centered', newTabTileSize: 'medium' }, searchEngine: 'duckduckgo', startupMode: 'newtab', startupPages: [], homepage: '', showHomeButton: false, newTabOpens: 'newtab', newTabShortcuts: 'smart', newTabClock: true, windowStart: 'default', launchAtLogin: false, showBookmarksBar: true, askWhereToSave: false, tabOptimizations: { enabled: true, idleMinutes: 3, maxBackgroundLive: 4, newTabIdleSeconds: 20, recentGraceSeconds: 45, pressureMode: 'balanced', excludedHosts: [] } },
-  version: '1.3.17', find: { visible: false, activeMatchOrdinal: 0, matches: 0 }
+  settings: { appearance: 'system', colorTheme: 'tide', appearanceOptions: { accentColor: '', density: 'comfortable', fontScale: 100, fontFamily: 'drift', cornerStyle: 'soft', tabStyle: 'underline', tabWidth: 'balanced', motion: 'full', chromeTint: 'balanced', bookmarkDisplay: 'labels', newTabBackground: 'tide', newTabLayout: 'centered', newTabTileSize: 'medium' }, searchEngine: 'duckduckgo', startupMode: 'newtab', startupPages: [], homepage: '', showHomeButton: false, newTabOpens: 'newtab', newTabShortcuts: 'smart', newTabClock: true, windowStart: 'default', launchAtLogin: false, showBookmarksBar: true, askWhereToSave: false, tabOptimizations: { enabled: true, idleMinutes: 3, maxBackgroundLive: 4, newTabIdleSeconds: 20, recentGraceSeconds: 45, pressureMode: 'balanced', excludedHosts: [] } },
+  version: '1.4.0', find: { visible: false, activeMatchOrdinal: 0, matches: 0 }
 };
 document.body.classList.toggle('is-windows', drift.platform === 'win32');
 const tabEls = new Map();
@@ -24,7 +24,8 @@ let contextTarget = null;
 const systemLight = window.matchMedia('(prefers-color-scheme: light)');
 systemLight.addEventListener('change', () => applySettings());
 const COLOR_THEMES = [
-  { id: 'violet', name: 'Violet', primary: '#a58bff', secondary: '#61e3dc' },
+  { id: 'tide', name: 'Tide', primary: '#f2c230', secondary: '#6fd3bf' },
+  { id: 'violet', name: 'Violet', primary: '#b49cff', secondary: '#61e3dc' },
   { id: 'ocean', name: 'Ocean', primary: '#67c9ef', secondary: '#54e6d3' },
   { id: 'forest', name: 'Forest', primary: '#5bd6a4', secondary: '#b2e875' },
   { id: 'rose', name: 'Rose', primary: '#ff8da8', secondary: '#ffc0d0' },
@@ -199,15 +200,16 @@ const TabCard = {
         this.empty.textContent = info.state === 'internal' ? 'Built-in page' : info.state === 'sleeping' ? 'No preview yet' : 'Preview unavailable';
       }
     }
-    this.el.classList.toggle('is-sleeping', info.state === 'sleeping');
+    this.el.classList.toggle('is-sleeping', info.state === 'sleeping' || info.state === 'frozen');
     this.mem.textContent = this.formatMemory(info);
   },
   formatMemory(info) {
-    if (info.state === 'sleeping') return 'Sleeping · 0 MB';
+    if (info.state === 'sleeping') return 'Asleep · 0 MB';
     if (info.state === 'internal' || info.memoryKB == null) return '—';
     const mb = info.memoryKB / 1024;
     const text = mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${Math.max(1, Math.round(mb))} MB`;
-    return info.sharedWith ? `${text} · shared process` : text;
+    const suffix = [info.state === 'frozen' ? 'paused' : '', info.sharedWith ? 'shared process' : ''].filter(Boolean).join(', ');
+    return suffix ? `${text} (${suffix})` : text;
   },
   place(tabEl) {
     const rect = tabEl.getBoundingClientRect();
@@ -740,6 +742,36 @@ function darkenHex(hex, amount = 0.22) {
   return `#${channels.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
 }
 
+// Readable ink for text and icons that sit on an accent fill.
+function inkOn(hex) {
+  const value = String(hex || '').replace('#', '');
+  if (!/^[0-9a-f]{6}$/i.test(value)) return '#ffffff';
+  const [r, g, b] = [0, 2, 4].map((offset) => {
+    const c = parseInt(value.slice(offset, offset + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.36 ? '#14130b' : '#ffffff';
+}
+// Address bar at rest: the host carries the weight, the rest of the address recedes.
+function renderAddressDisplay() {
+  const omni = $('omni'); const display = $('addr-display'); const addr = $('addr');
+  if (!omni || !display) return;
+  let html = '';
+  if (document.activeElement !== addr && addr.value && addr.value === (state.url || '')) {
+    try {
+      const u = new URL(addr.value);
+      if (/^https?:$/.test(u.protocol) && u.hostname) {
+        const host = u.hostname.replace(/^www\./i, '');
+        const prefix = u.hostname.length !== host.length ? 'www.' : '';
+        const rest = `${u.port ? `:${u.port}` : ''}${u.pathname === '/' ? '' : u.pathname}${u.search}${u.hash}`;
+        html = `${escapeHtml(prefix)}<b>${escapeHtml(host)}</b>${escapeHtml(rest)}`;
+      }
+    } catch { html = ''; }
+  }
+  if (display.innerHTML !== html) display.innerHTML = html;
+  omni.classList.toggle('show-display', !!html);
+}
 function applySettings() {
   const preferences = state.settings || {};
   const mode = ['system', 'light', 'dark'].includes(preferences.appearance) ? preferences.appearance : 'system';
@@ -747,7 +779,7 @@ function applySettings() {
   document.documentElement.dataset.themeMode = mode;
   document.documentElement.dataset.theme = mode === 'system' ? (systemLight.matches ? 'light' : 'dark') : mode;
   $('home')?.classList.toggle('hidden', preferences.showHomeButton !== true);
-  const colorTheme = COLOR_THEMES.some((item) => item.id === preferences.colorTheme) ? preferences.colorTheme : 'violet';
+  const colorTheme = COLOR_THEMES.some((item) => item.id === preferences.colorTheme) ? preferences.colorTheme : 'tide';
   const root = document.documentElement;
   root.dataset.colorTheme = colorTheme;
   const visual = preferences.appearanceOptions || {};
@@ -755,10 +787,12 @@ function applySettings() {
   if (accent) {
     root.style.setProperty('--accent', accent);
     root.style.setProperty('--accent-strong', darkenHex(accent, 0.22));
+    root.style.setProperty('--on-accent', inkOn(accent));
     root.style.setProperty('--glyph-accent', accent);
   } else {
     root.style.removeProperty('--accent');
     root.style.removeProperty('--accent-strong');
+    root.style.removeProperty('--on-accent');
     root.style.removeProperty('--glyph-accent');
   }
   root.dataset.uiDensity = ['compact', 'comfortable', 'spacious'].includes(visual.density) ? visual.density : 'comfortable';
@@ -770,13 +804,13 @@ function applySettings() {
   root.style.setProperty('--ui-font-scale', String(fontScale / 100));
   const chrome = $('chrome');
   if (chrome) { chrome.style.zoom = String(fontScale / 100); chrome.style.width = `${10000 / fontScale}%`; }
-  const fontFamilies = { system: 'system-ui, -apple-system, "Segoe UI", sans-serif', inter: 'Inter, system-ui, sans-serif', segoe: '"Segoe UI", system-ui, sans-serif', arial: 'Arial, Helvetica, sans-serif' };
-  root.style.setProperty('--ui-font-family', fontFamilies[visual.fontFamily] || fontFamilies.system);
+  const fontFamilies = { drift: '"Drift Sans", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif', system: 'system-ui, -apple-system, "Segoe UI", sans-serif', inter: 'Inter, system-ui, sans-serif', segoe: '"Segoe UI", system-ui, sans-serif', arial: 'Arial, Helvetica, sans-serif' };
+  root.style.setProperty('--ui-font-family', fontFamilies[visual.fontFamily] || fontFamilies.drift);
   document.body.classList.toggle('bookmarks-icons-only', visual.bookmarkDisplay === 'icons');
   document.body.classList.toggle('hide-bookmarks', preferences.showBookmarksBar === false);
   const isWindows = drift.platform === 'win32';
-  document.documentElement.style.setProperty('--chrome-height', `${preferences.showBookmarksBar === false ? 82 : 120}px`);
-  if ($('window-version')) $('window-version').textContent = (state.version || '1.3.17').split('.').slice(0, 2).join('.');
+  document.documentElement.style.setProperty('--chrome-height', `${preferences.showBookmarksBar === false ? 84 : 118}px`);
+  if ($('window-version')) $('window-version').textContent = (state.version || '1.4.0').split('.').slice(0, 2).join('.');
   if ($('win-maximize')) {
     if (lastMaximizedState !== !!state.isMaximized) {
       lastMaximizedState = !!state.isMaximized;
@@ -788,6 +822,34 @@ function applySettings() {
     $('win-maximize').setAttribute('aria-label', state.isMaximized ? 'Restore window' : 'Maximize window');
   }
   if ($('window-actions')) $('window-actions').classList.toggle('hidden', !isWindows);
+}
+
+// ---- Settings > Tabs and memory: live meter ---------------------------------------------
+let memoryStats = null;
+let memoryTimer = 0;
+function formatMB(kb) { const mb = Number(kb || 0) / 1024; return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${Math.round(mb)} MB`; }
+function memoryMeterMarkup() {
+  const m = memoryStats;
+  if (!m) return '<div class="memory-meter" id="memory-meter"><span class="memory-meter-figure">…</span></div>';
+  const total = Math.max(1, m.totalKB);
+  const browserPct = Math.round((m.browserKB / total) * 100);
+  const [value, unit] = formatMB(m.totalKB).split(' ');
+  return `<div class="memory-meter" id="memory-meter" role="group" aria-label="Memory in use">
+    <span class="memory-meter-figure">${value}<small>${unit}</small></span>
+    <div class="memory-meter-bar" aria-hidden="true"><span style="width:100%"></span><span class="chrome" style="width:${browserPct}%"></span></div>
+    <div class="memory-meter-legend"><span><i class="chrome"></i>Drift itself ${formatMB(m.browserKB)}</span><span><i></i>Tabs ${formatMB(m.tabsKB)}</span><span><i class="asleep"></i>${m.live} running, ${m.frozen} paused, ${m.asleep} asleep</span></div>
+  </div>`;
+}
+async function refreshMemoryMeter() {
+  if (state.internalPage !== 'settings' || currentSettingsSection !== 'tabs') { clearInterval(memoryTimer); memoryTimer = 0; return; }
+  try { memoryStats = await drift.invoke('memory:stats'); } catch { memoryStats = null; }
+  const node = $('memory-meter');
+  if (node && memoryStats) node.outerHTML = memoryMeterMarkup();
+}
+function watchMemoryMeter() {
+  if (state.internalPage === 'settings' && currentSettingsSection === 'tabs') {
+    if (!memoryTimer) { refreshMemoryMeter(); memoryTimer = setInterval(refreshMemoryMeter, 2000); }
+  } else if (memoryTimer) { clearInterval(memoryTimer); memoryTimer = 0; }
 }
 
 function settingRow(label, hint, control) {
@@ -1062,10 +1124,10 @@ function renderSettingsContent() {
       title: 'Appearance', intro: 'Personalize Drift’s colors, typography, spacing, tabs, and motion.', cards: [
         ['Interface mode', 'Light, dark, or follow your operating system automatically.', modePickerMarkup(prefs.appearance || 'system'), 'mode-card'],
         ['Color theme', 'Choose a coordinated accent palette. A custom accent below can override the palette color.',
-          `<div class="theme-picker-block"><div class="theme-grid">${COLOR_THEMES.map((theme) => `<button type="button" class="theme-option ${((prefs.colorTheme || 'violet') === theme.id) ? 'selected' : ''}" data-color-theme="${theme.id}" aria-pressed="${(prefs.colorTheme || 'violet') === theme.id}" title="${theme.name} theme"><span class="theme-preview theme-preview-${theme.id}"><i></i><i></i><i></i></span><span class="theme-option-name">${theme.name}</span>${(prefs.colorTheme || 'violet') === theme.id ? '<span class="theme-check"><svg data-fa="check"></svg></span>' : ''}</button>`).join('')}</div></div>`],
-        ['Your accent color', 'Pick any custom accent for highlights, active tabs, focus rings, and buttons. Choose “Use theme color” to return to the palette.', `<div class="appearance-accent-control"><label class="accent-swatch-label" for="appearance-accent-setting"><input id="appearance-accent-setting" type="color" value="${/^#[0-9a-f]{6}$/i.test((prefs.appearanceOptions || {}).accentColor || '') ? (prefs.appearanceOptions || {}).accentColor : (COLOR_THEMES.find((item) => item.id === (prefs.colorTheme || 'violet')) || COLOR_THEMES[0]).primary}" aria-label="Choose custom browser accent"><span>Custom accent</span></label><button type="button" class="small-action" data-reset-accent>Use theme color</button></div>`],
+          `<div class="theme-picker-block"><div class="theme-grid">${COLOR_THEMES.map((theme) => `<button type="button" class="theme-option ${((prefs.colorTheme || 'tide') === theme.id) ? 'selected' : ''}" data-color-theme="${theme.id}" aria-pressed="${(prefs.colorTheme || 'tide') === theme.id}" title="${theme.name} theme"><span class="theme-preview theme-preview-${theme.id}"><i></i><i></i><i></i></span><span class="theme-option-name">${theme.name}</span>${(prefs.colorTheme || 'tide') === theme.id ? '<span class="theme-check"><svg data-fa="check"></svg></span>' : ''}</button>`).join('')}</div></div>`],
+        ['Your accent color', 'Pick any custom accent for highlights, active tabs, focus rings, and buttons. Choose “Use theme color” to return to the palette.', `<div class="appearance-accent-control"><label class="accent-swatch-label" for="appearance-accent-setting"><input id="appearance-accent-setting" type="color" value="${/^#[0-9a-f]{6}$/i.test((prefs.appearanceOptions || {}).accentColor || '') ? (prefs.appearanceOptions || {}).accentColor : (COLOR_THEMES.find((item) => item.id === (prefs.colorTheme || 'tide')) || COLOR_THEMES[0]).primary}" aria-label="Choose custom browser accent"><span>Custom accent</span></label><button type="button" class="small-action" data-reset-accent>Use theme color</button></div>`],
         ['Typography and sizing', 'Set the interface font and scale browser controls to your preference.', [
-          settingRow('Interface font', 'Changes the font used throughout Drift’s browser interface.', selectSetting('appearance-font-family-setting', (prefs.appearanceOptions || {}).fontFamily || 'system', [['system', 'System default'], ['inter', 'Inter'], ['segoe', 'Segoe UI'], ['arial', 'Arial']])),
+          settingRow('Interface font', 'Changes the font used throughout Drift’s browser interface.', selectSetting('appearance-font-family-setting', (prefs.appearanceOptions || {}).fontFamily || 'drift', [['drift', 'Drift Sans'], ['system', 'System default'], ['inter', 'Inter'], ['segoe', 'Segoe UI'], ['arial', 'Arial']])),
           settingRow('Browser interface scale', 'Scale the tab strip, toolbar, buttons, and browser controls without changing website zoom.', selectSetting('appearance-font-scale-setting', String((prefs.appearanceOptions || {}).fontScale ?? 100), [['90', 'Extra small · 90%'], ['95', 'Small · 95%'], ['100', 'Default · 100%'], ['105', 'Large · 105%'], ['110', 'Larger · 110%'], ['115', 'Extra large · 115%'], ['120', 'Maximum · 120%']]))
         ].join('')],
         ['Layout and spacing', 'Choose how compact or open the browser controls feel.', [
@@ -1074,7 +1136,7 @@ function renderSettingsContent() {
           settingRow('Browser chrome tint', 'Control how strongly your accent color tints the browser toolbar and surfaces.', selectSetting('appearance-chrome-tint-setting', (prefs.appearanceOptions || {}).chromeTint || 'balanced', [['neutral', 'Neutral'], ['subtle', 'Subtle'], ['balanced', 'Balanced'], ['strong', 'Strong']]))
         ].join('')],
         ['Tab strip style', 'Choose the active-tab treatment and preferred tab width.', [
-          settingRow('Tab appearance', 'Change how the selected tab is shown.', selectSetting('appearance-tab-style-setting', (prefs.appearanceOptions || {}).tabStyle || 'underline', [['underline', 'Underline'], ['card', 'Raised card'], ['pill', 'Pill'], ['minimal', 'Minimal']])),
+          settingRow('Tab appearance', 'Change how the selected tab is shown.', selectSetting('appearance-tab-style-setting', (prefs.appearanceOptions || {}).tabStyle || 'underline', [['underline', 'Moored (default)'], ['card', 'Raised card'], ['pill', 'Pill'], ['minimal', 'Minimal']])),
           settingRow('Tab width', 'Set the preferred width before Drift compresses inactive tabs.', selectSetting('appearance-tab-width-setting', (prefs.appearanceOptions || {}).tabWidth || 'balanced', [['compact', 'Compact'], ['balanced', 'Balanced'], ['wide', 'Wide']]))
         ].join('')],
         ['Bookmarks bar', 'Keep favorite websites one click below the address bar.', [
@@ -1094,23 +1156,28 @@ function renderSettingsContent() {
         ['New Tab page', 'Choose what appears on a new tab and how it looks.', [
           settingRow('Shortcuts', 'Which sites appear under the search box.', selectSetting('newtab-shortcuts-setting', prefs.newTabShortcuts || 'smart', [['smart', 'Most visited sites'], ['bookmarks', 'Recent bookmarks'], ['hidden', 'Hidden']])),
           settingRow('Show date and time', 'Display the clock and date at the top of the page.', switchSetting('newtab-clock-setting', prefs.newTabClock !== false)),
-          settingRow('Background style', 'Choose the New Tab page atmosphere.', selectSetting('appearance-newtab-background-setting', (prefs.appearanceOptions || {}).newTabBackground || 'aurora', [['aurora', 'Aurora'], ['midnight', 'Midnight'], ['paper', 'Paper'], ['forest', 'Forest'], ['sunset', 'Sunset']])),
+          settingRow('Background style', 'Choose the New Tab page atmosphere.', selectSetting('appearance-newtab-background-setting', (prefs.appearanceOptions || {}).newTabBackground || 'tide', [['tide', 'Tideline'], ['aurora', 'Aurora'], ['midnight', 'Midnight'], ['paper', 'Paper'], ['forest', 'Forest'], ['sunset', 'Sunset']])),
           settingRow('Page layout', 'Set the overall content width and spacing.', selectSetting('appearance-newtab-layout-setting', (prefs.appearanceOptions || {}).newTabLayout || 'centered', [['centered', 'Centered'], ['wide', 'Wide'], ['compact', 'Compact']])),
           settingRow('Shortcut tile size', 'Make quick-access tiles smaller or larger.', selectSetting('appearance-newtab-tile-size-setting', (prefs.appearanceOptions || {}).newTabTileSize || 'medium', [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']]))
         ].join('')]
       ]
     },
     tabs: {
-      title: 'Tab optimization', intro: 'Choose how Drift manages inactive tabs and balances memory use.', cards: [
-        ['Automatic tab management', 'Sleeping tabs keep their place in the tab strip and reload when you select them.', [
-          settingRow('Automatically suspend inactive tabs', 'Release background pages to reduce memory use. Your active tab is never suspended.', switchSetting('tab-optimization-enabled-setting', (prefs.tabOptimizations || {}).enabled !== false)),
-          settingRow('Suspend after', 'Normal idle timeout. Memory pressure can shorten this when pressure response is enabled.', selectSetting('tab-idle-minutes-setting', String((prefs.tabOptimizations || {}).idleMinutes ?? 3), [['0', 'Never by idle time'], ['1', '1 minute'], ['2', '2 minutes'], ['3', '3 minutes'], ['5', '5 minutes'], ['10', '10 minutes'], ['15', '15 minutes'], ['30', '30 minutes'], ['60', '60 minutes']])),
+      title: 'Tabs and memory', intro: 'Drift pauses, then sleeps, the tabs you are not using so the one in front of you stays fast.', cards: [
+        ['Memory right now', 'What Drift is using at this moment. Paused and sleeping tabs cost little or nothing.', memoryMeterMarkup()],
+        ['Pause background tabs', 'A paused tab stops running scripts and timers but keeps its page exactly as you left it, so it comes back instantly.', [
+          settingRow('Pause tabs you are not using', 'Background tabs pause after a short delay. Tabs playing audio, recording, downloading or open in DevTools keep running.', switchSetting('tab-freeze-setting', (prefs.tabOptimizations || {}).freezeBackground !== false)),
+          settingRow('Pause after', 'How long a tab stays in the background before it pauses.', selectSetting('tab-freeze-after-setting', String((prefs.tabOptimizations || {}).freezeAfterSeconds ?? 30), [['10', '10 seconds'], ['30', '30 seconds'], ['60', '1 minute'], ['120', '2 minutes'], ['300', '5 minutes']]))
+        ].join('')],
+        ['Put tabs to sleep', 'Sleeping tabs release all of their memory. They keep their place in the tab strip and reload when you select them.', [
+          settingRow('Automatically put inactive tabs to sleep', 'Release background pages to reduce memory use. Your active tab never sleeps.', switchSetting('tab-optimization-enabled-setting', (prefs.tabOptimizations || {}).enabled !== false)),
+          settingRow('Sleep after', 'Normal idle timeout. Memory pressure can shorten this when pressure response is enabled.', selectSetting('tab-idle-minutes-setting', String((prefs.tabOptimizations || {}).idleMinutes ?? 3), [['0', 'Never by idle time'], ['1', '1 minute'], ['2', '2 minutes'], ['3', '3 minutes'], ['5', '5 minutes'], ['10', '10 minutes'], ['15', '15 minutes'], ['30', '30 minutes'], ['60', '60 minutes']])),
           settingRow('Keep loaded background tabs', 'Maximum number of inactive tabs that retain a live page. Oldest eligible tabs sleep first.', selectSetting('tab-background-cap-setting', String((prefs.tabOptimizations || {}).maxBackgroundLive ?? 4), [['0', 'No limit'], ['1', '1 tab'], ['2', '2 tabs'], ['3', '3 tabs'], ['4', '4 tabs'], ['6', '6 tabs'], ['8', '8 tabs'], ['12', '12 tabs']])),
           settingRow('New Tab page timeout', 'Lightweight New Tab pages can sleep sooner than regular websites.', selectSetting('tab-newtab-timeout-setting', String((prefs.tabOptimizations || {}).newTabIdleSeconds ?? 20), [['0', 'Use normal idle timeout'], ['10', '10 seconds'], ['20', '20 seconds'], ['30', '30 seconds'], ['60', '1 minute'], ['120', '2 minutes']])),
           settingRow('Recently used tab grace period', 'A tab used within this time will not be selected by the background-tab limit.', selectSetting('tab-recent-grace-setting', String((prefs.tabOptimizations || {}).recentGraceSeconds ?? 45), [['15', '15 seconds'], ['30', '30 seconds'], ['45', '45 seconds'], ['60', '1 minute'], ['90', '90 seconds'], ['120', '2 minutes'], ['180', '3 minutes']])),
           settingRow('Memory pressure response', 'Choose whether Drift reacts to low available memory. Aggressive mode releases eligible tabs sooner.', selectSetting('tab-pressure-mode-setting', (prefs.tabOptimizations || {}).pressureMode || 'balanced', [['off', 'Off'], ['balanced', 'Balanced'], ['aggressive', 'Aggressive']]))
         ].join('')],
-        ['Keep specific websites active', 'Add one domain per line. Matching domains and their subdomains are excluded from automatic suspension.', `<div class="tab-exclusions-editor"><textarea id="tab-exclusions-setting" class="page-input tab-exclusions-input" rows="5" spellcheck="false" placeholder="example.com&#10;docs.example.org">${escapeHtml(((prefs.tabOptimizations || {}).excludedHosts || []).join('\n'))}</textarea><div class="tab-exclusions-footer"><small>Up to 100 domains. Do not include page paths. Current exclusions: ${((prefs.tabOptimizations || {}).excludedHosts || []).length}.</small><button class="small-action primary-action" data-action="save-tab-exclusions">Save site exceptions</button></div></div>`]
+        ['Keep specific websites running', 'One domain per line. Matching domains and their subdomains are never paused or put to sleep.', `<div class="tab-exclusions-editor"><textarea id="tab-exclusions-setting" class="page-input tab-exclusions-input" rows="5" spellcheck="false" placeholder="example.com&#10;docs.example.org">${escapeHtml(((prefs.tabOptimizations || {}).excludedHosts || []).join('\n'))}</textarea><div class="tab-exclusions-footer"><small>Up to 100 domains. Do not include page paths. Current exclusions: ${((prefs.tabOptimizations || {}).excludedHosts || []).length}.</small><button class="small-action primary-action" data-action="save-tab-exclusions">Save site exceptions</button></div></div>`]
       ]
     },
     search: {
@@ -1138,7 +1205,7 @@ function renderSettingsContent() {
           <section class="about-hero">
             <div class="about-hero-mark"><img src="../shared/assets/drift-mark.svg" alt=""></div>
             <div class="about-hero-text">
-              <h2>Drift Browser <span class="about-version">${escapeHtml(state.version || '1.3.17')}</span></h2>
+              <h2>Drift Browser <span class="about-version">${escapeHtml(state.version || '1.4.0')}</span></h2>
               <p>A focused browser built for fast, comfortable browsing.</p>
               <div class="about-chips"><span class="about-chip">Electron ${escapeHtml(state.electronVersion || '—')}</span><span class="about-chip">Chromium ${escapeHtml(state.chromiumVersion || '—')}</span></div>
             </div>
@@ -1172,7 +1239,7 @@ function renderSettingsContent() {
     ? section.cards.map(([title, hint, html, cls = '']) => `<section class="settings-group"><div class="group-head"><h2 class="group-title">${title}</h2>${hint ? `<p>${hint}</p>` : ''}</div><div class="page-card settings-card ${cls}">${html}</div></section>`).join('')
     : (section.bare ? section.body : `<div class="page-card settings-card">${section.body}</div>`);
   $('page-main').innerHTML = `
-    <div class="page-heading"><div><span class="eyebrow">PREFERENCES</span><h1>${section.title}</h1><p>${section.intro}</p></div></div>
+    <div class="page-heading"><div><h1>${section.title}</h1><p>${section.intro}</p></div></div>
     ${body}
     <div class="page-footnote">Settings are saved automatically on this device.</div>`;
 }
@@ -1180,7 +1247,7 @@ function renderBookmarksPage() {
   const all = (state.bookmarks || []).filter((bookmark) => `${bookmark.title} ${bookmark.url} ${bookmark.folder || ''}`.toLowerCase().includes(bookmarkFilter.toLowerCase()) && (!bookmarkFolderFilter || (bookmark.folder || '') === bookmarkFolderFilter));
   const folders = [...new Set((state.bookmarks || []).map((bookmark) => bookmark.folder).filter(Boolean))].sort();
   $('page-main').innerHTML = `
-    <div class="page-heading page-heading-row"><div><span class="eyebrow">YOUR LIBRARY</span><h1>Bookmarks</h1><p>Saved pages, organized and ready whenever you need them.</p></div><button class="primary-button" data-action="focus-add-bookmark"><svg data-fa="plus"></svg> Add bookmark</button></div>
+    <div class="page-heading page-heading-row"><div><h1>Bookmarks</h1><p>Saved pages, organized and ready whenever you need them.</p></div><button class="primary-button" data-action="focus-add-bookmark"><svg data-fa="plus"></svg> Add bookmark</button></div>
     <div class="page-toolbar"><div class="page-search"><svg data-fa="search"></svg><input id="bookmark-search" value="${escapeHtml(bookmarkFilter)}" placeholder="Search bookmarks"></div>${folders.length ? `<select id="bookmark-folder-filter" class="page-select" aria-label="Filter by bookmark folder"><option value="">All folders</option>${folders.map((folder) => `<option value="${escapeHtml(folder)}" ${bookmarkFolderFilter === folder ? 'selected' : ''}>${escapeHtml(folder)}</option>`).join('')}</select>` : ''}<span class="toolbar-count">${all.length} of ${(state.bookmarks || []).length}</span></div>
     <form id="add-bookmark-form" class="add-bookmark-form hidden"><input id="new-bookmark-title" placeholder="Name"><input id="new-bookmark-url" type="url" placeholder="https://example.com" required><input id="new-bookmark-folder" placeholder="Folder (optional)"><button class="primary-button" type="submit">Save bookmark</button></form>
     <div class="page-card manager-card">
@@ -1214,7 +1281,7 @@ function renderHistoryPage() {
       </div>`).join('')}
     </section>`).join('');
   $('page-main').innerHTML = `
-    <div class="page-heading page-heading-row"><div><span class="eyebrow">YOUR ACTIVITY</span><h1>History</h1><p>Search and revisit pages from your browsing activity.</p></div><button class="secondary-button" data-action="clear-history" ${(state.history || []).length ? '' : 'disabled'}>Clear history</button></div>
+    <div class="page-heading page-heading-row"><div><h1>History</h1><p>Search and revisit pages from your browsing activity.</p></div><button class="secondary-button" data-action="clear-history" ${(state.history || []).length ? '' : 'disabled'}>Clear history</button></div>
     <div class="page-toolbar"><div class="page-search"><svg data-fa="search"></svg><input id="history-search" value="${escapeHtml(historyFilter)}" placeholder="Search titles and web addresses"><button class="history-search-clear" type="button" data-action="clear-history-search" title="Clear search" aria-label="Clear search" ${historyFilter ? '' : 'disabled'}>×</button></div><span class="toolbar-count">${history.length} ${history.length === 1 ? 'visit' : 'visits'}</span></div>
     <div class="history-groups page-card manager-card">${history.length ? groupMarkup : `<div class="empty-state"><div class="empty-state-icon"><svg data-fa="history"></svg></div><strong>${historyFilter ? 'No matching pages' : 'Your history is empty'}</strong><span>${historyFilter ? 'Try a different search.' : 'Pages you visit will appear here, grouped by day.'}</span></div>`}</div>`;
 }
@@ -1222,7 +1289,7 @@ function renderHistoryPage() {
 function renderDownloadsPage() {
   const downloads = state.downloads || [];
   $('page-main').innerHTML = `
-    <div class="page-heading page-heading-row"><div><span class="eyebrow">FILE ACTIVITY</span><h1>Downloads</h1><p>Track files saved from your browsing sessions.</p></div><button class="secondary-button" data-action="clear-downloads" ${downloads.some(isCompleted) ? '' : 'disabled'}>Clear completed</button></div>
+    <div class="page-heading page-heading-row"><div><h1>Downloads</h1><p>Track files saved from your browsing sessions.</p></div><button class="secondary-button" data-action="clear-downloads" ${downloads.some(isCompleted) ? '' : 'disabled'}>Clear completed</button></div>
     <div class="page-card manager-card downloads-card">${downloads.length ? downloads.map((download) => {
       const total = Number(download.totalBytes || 0); const received = Number(download.receivedBytes || 0);
       const progress = total > 0 ? Math.min(100, Math.round(received / total * 100)) : 0;
@@ -1236,7 +1303,7 @@ function renderDownloadsPage() {
 function renderExtensionsPage() {
   const extensions = state.extensions || [];
   $('page-main').innerHTML = `
-    <div class="page-heading page-heading-row"><div><span class="eyebrow">BROWSER TOOLS</span><h1>Extensions</h1><p>Add Chrome-compatible extensions to customize your browsing experience.</p></div><div class="manager-actions"><button class="small-action" data-action="browse-web-store">Browse Web Store</button><button class="small-action" data-action="install-extension">＋ Install unpacked</button><button class="primary-button" data-action="open-store-dialog">Add from Chrome Web Store</button></div></div>
+    <div class="page-heading page-heading-row"><div><h1>Extensions</h1><p>Add Chrome-compatible extensions to customize your browsing experience.</p></div><div class="manager-actions"><button class="small-action" data-action="browse-web-store">Browse Web Store</button><button class="small-action" data-action="install-extension">Load unpacked</button><button class="primary-button" data-action="open-store-dialog">Add from Chrome Web Store</button></div></div>
     <div class="extension-notice"><svg data-fa="info"></svg><span>Drift installs extensions from the Chrome Web Store (updated automatically) or from an unpacked folder containing <code>manifest.json</code>. Manifest V3 extensions are supported from the store; Electron implements only part of the Chrome extension API, so some extensions may not work fully.</span></div>
     <div class="page-card manager-card">${extensions.length ? extensions.map((extension) => `
       <div class="manager-row extension-row"><div class="extension-mark">${escapeHtml((extension.name || 'E').charAt(0).toUpperCase())}</div><div class="manager-fields"><strong>${escapeHtml(extension.name)}</strong><span class="manager-url-text">${escapeHtml(extension.description || 'No description provided.')}</span><div class="manager-meta"><span>Version ${escapeHtml(extension.version || '—')}</span><span>${extension.source === 'chrome-web-store' ? 'Chrome Web Store' : 'Unpacked'}</span><span>${escapeHtml(extension.id || '')}</span></div></div><div class="manager-actions"><button class="small-action remove-action" data-action="remove-extension" data-id="${escapeHtml(extension.id)}">Remove</button></div></div>`).join('') : `<div class="empty-state"><div class="empty-state-icon"><svg data-fa="puzzle"></svg></div><strong>No extensions installed</strong><span>Add one from the Chrome Web Store or install an unpacked extension folder.</span></div>`}</div>
@@ -1260,11 +1327,11 @@ function pageNavigation() {
   };
   const links = [['settings', 'Settings'], ['bookmarks', 'Bookmarks'], ['history', 'History'], ['downloads', 'Downloads'], ['extensions', 'Extensions']];
   const settingsLinks = [['general','General'],['profiles','Profiles'],['appearance','Appearance'],['newtab','New tab'],['tabs','Tabs'],['search','Search'],['privacy','Privacy'],['downloads','Downloads'],['about','About']];
-  const subnav = state.internalPage === 'settings' ? `<div class="sidebar-caption settings-caption">SETTINGS</div><nav class="page-nav settings-subnav">${settingsLinks.map(([key,label]) => `<button class="page-nav-item setting-nav-item ${currentSettingsSection === key ? 'active' : ''}" data-setting-section="${key}"><span class="page-nav-icon">${icons[key]}</span>${label}</button>`).join('')}</nav>` : '';
+  const subnav = state.internalPage === 'settings' ? `<div class="sidebar-caption settings-caption">Settings</div><nav class="page-nav settings-subnav">${settingsLinks.map(([key,label]) => `<button class="page-nav-item setting-nav-item ${currentSettingsSection === key ? 'active' : ''}" data-setting-section="${key}"><span class="page-nav-icon">${icons[key]}</span>${label}</button>`).join('')}</nav>` : '';
   return `<div class="page-sidebar-brand"><img src="../shared/assets/drift-mark.svg" alt=""><div class="brand-lockup"><span class="wm" role="img" aria-label="Drift">Dr<span class="wm-i" aria-hidden="true">ı</span>ft</span><div class="brand-sub"><span>Browser</span></div></div></div>
-    <div class="page-sidebar-scroll"><div class="sidebar-caption">LIBRARY & PREFERENCES</div>
+    <div class="page-sidebar-scroll"><div class="sidebar-caption">Library</div>
     <nav class="page-nav">${links.map(([page, label]) => `<button class="page-nav-item ${state.internalPage === page ? 'active' : ''}" data-page="${page}"><span class="page-nav-icon">${icons[page]}</span>${label}</button>`).join('')}</nav>${subnav}</div>
-    <div class="sidebar-bottom"><span class="ver">Drift Browser ${escapeHtml(state.version || '1.3.17')}</span><small>Changes save automatically</small><small class="dev-credit">Made by Jessie Albert Regualos &middot; Yotsuchi</small></div>`;
+    <div class="sidebar-bottom"><span class="ver">Drift ${escapeHtml(state.version || '1.4.0')}</span><small>Changes save automatically</small><small class="dev-credit">Made by Jessie Albert Regualos (Yotsuchi)</small></div>`;
 }
 function currentPageRenderKey() {
   const page = state.internalPage || '';
@@ -1277,6 +1344,7 @@ function currentPageRenderKey() {
 }
 function renderInternalPage(force = false) {
   const page = state.internalPage || '';
+  queueMicrotask(watchMemoryMeter);
   const container = $('internalPage');
   container.classList.toggle('hidden', !page);
   if (!page) { lastPageRenderKey = ''; return; }
@@ -1306,6 +1374,7 @@ function render() {
   renderTabs();
   if (document.activeElement !== $('addr') || !document.hasFocus()) $('addr').value = state.url || '';
   $('omni').classList.toggle('secure', (state.url || '').startsWith('https:'));
+  renderAddressDisplay();
   $('back').disabled = !state.canBack;
   $('forward').disabled = !state.canForward;
   $('star').classList.toggle('on', !!state.bookmarked);
@@ -1570,7 +1639,9 @@ drift.on('find:show', () => {
 
 $('omni').addEventListener('submit', (event) => { event.preventDefault(); drift.cmd('go', $('addr').value); $('addr').blur(); });
 $('addr').addEventListener('keydown', (event) => { if (event.key === 'Escape') { $('addr').value = state.url || ''; $('addr').blur(); } });
-$('addr').addEventListener('focus', () => setTimeout(() => $('addr').select(), 0));
+$('addr').addEventListener('focus', () => { renderAddressDisplay(); setTimeout(() => $('addr').select(), 0); });
+$('addr').addEventListener('blur', () => setTimeout(renderAddressDisplay, 0));
+$('addr').addEventListener('input', renderAddressDisplay);
 for (const [id, command] of [['back', 'back'], ['forward', 'forward'], ['reload', 'reload'], ['reader', 'reader'], ['star', 'bookmark'], ['palette', 'palette'], ['newtab', 'new']]) $(id).addEventListener('click', () => drift.cmd(command));
 $('brand').addEventListener('click', () => drift.cmd('new'));
 $('tab-spacer').addEventListener('dblclick', () => drift.windowAction('maximize'));
@@ -1642,7 +1713,7 @@ $('find-close').addEventListener('click', () => drift.manage('find:close'));
 
 $('page-sidebar').addEventListener('click', (event) => {
   const settingButton = event.target.closest('[data-setting-section]');
-  if (settingButton) { currentSettingsSection = settingButton.dataset.settingSection; renderSettingsContent(); $('page-sidebar').innerHTML = pageNavigation(); return; }
+  if (settingButton) { currentSettingsSection = settingButton.dataset.settingSection; renderSettingsContent(); $('page-sidebar').innerHTML = pageNavigation(); watchMemoryMeter(); return; }
   const button = event.target.closest('[data-page]');
   if (!button) return;
   drift.cmd('go', `drift://${button.dataset.page}`);
@@ -1677,6 +1748,8 @@ $('page-main').addEventListener('change', (event) => {
   else if (id === 'newtab-opens-setting') saveSetting({ newTabOpens: event.target.value });
   else if (id === 'newtab-shortcuts-setting') saveSetting({ newTabShortcuts: event.target.value });
   else if (id === 'newtab-clock-setting') saveSetting({ newTabClock: event.target.checked });
+  else if (id === 'tab-freeze-setting') saveSetting({ tabOptimizations: { freezeBackground: event.target.checked } });
+  else if (id === 'tab-freeze-after-setting') saveSetting({ tabOptimizations: { freezeAfterSeconds: Number(event.target.value) } });
   else if (id === 'tab-optimization-enabled-setting') saveSetting({ tabOptimizations: { enabled: event.target.checked } });
   else if (id === 'tab-idle-minutes-setting') saveSetting({ tabOptimizations: { idleMinutes: Number(event.target.value) } });
   else if (id === 'tab-background-cap-setting') saveSetting({ tabOptimizations: { maxBackgroundLive: Number(event.target.value) } });
@@ -1715,7 +1788,7 @@ $('page-main').addEventListener('click', (event) => {
     state.settings = { ...state.settings, appearanceOptions }; applySettings();
     saveSetting({ appearanceOptions: { accentColor: '' } });
     const input = $('appearance-accent-setting');
-    const theme = COLOR_THEMES.find((item) => item.id === (state.settings?.colorTheme || 'violet')) || COLOR_THEMES[0];
+    const theme = COLOR_THEMES.find((item) => item.id === (state.settings?.colorTheme || 'tide')) || COLOR_THEMES[0];
     if (input) input.value = theme.primary;
     return;
   }

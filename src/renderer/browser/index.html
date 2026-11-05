@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: https: http:; style-src 'self'; style-src-attr 'unsafe-inline'; script-src 'self'">
 <link rel="stylesheet" href="../shared/tailwind.generated.css">
+<link rel="preload" href="../shared/fonts/instrument-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="../shared/style.css">
 </head>
 <body>
@@ -38,7 +39,8 @@
       <form id="omni" class="omni flex items-center gap-2 min-w-0 flex-1" autocomplete="off" role="search">
         <svg data-fa="globe" class="address-mark address-globe"></svg>
         <svg data-fa="lock" class="address-mark address-lock"></svg>
-        <input id="addr" type="text" spellcheck="false" placeholder="Search or enter address" aria-label="Search or enter address">
+        <input id="addr" type="text" spellcheck="false" placeholder="Search or type a web address" aria-label="Search or enter address">
+        <span id="addr-display" class="addr-display" aria-hidden="true"></span>
         <button type="button" id="star" class="icon sm" title="Bookmark this page (Ctrl+D)" aria-label="Bookmark this page"><svg class="star-off" data-fa="star"></svg><svg class="star-on" data-fa="starFill"></svg></button>
       </form>
       <span class="toolbar-divider" aria-hidden="true"></span>
@@ -58,7 +60,7 @@
     <div id="bookmarksbar" class="flex items-center gap-2 min-w-0 px-3" aria-label="Bookmarks bar">
       <div id="bookmark-items" class="bookmark-items flex items-center gap-1 min-w-0 flex-1"></div>
       <button id="bookmarks-overflow" class="bookmarks-more hidden shrink-0" title="More bookmarks" aria-label="More bookmarks" aria-haspopup="menu">»</button>
-      <button id="manage-bookmarks" class="bookmarks-manage shrink-0" title="Manage bookmarks">Manage</button>
+      <button id="manage-bookmarks" class="bookmarks-manage shrink-0" title="Manage bookmarks">All bookmarks</button>
     </div>
   </div>
 
@@ -98,7 +100,6 @@
     <div class="dialog-panel review-dialog-panel">
       <div class="dialog-heading review-dialog-heading">
         <div>
-          <span class="review-dialog-eyebrow">A QUICK PRODUCT REVIEW</span>
           <h2 id="review-dialog-title">How’s Drift working for you?</h2>
           <p id="review-dialog-description">Your feedback helps make Drift better. This is optional and only takes a moment.</p>
         </div>

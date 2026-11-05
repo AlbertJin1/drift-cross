@@ -3,59 +3,63 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: https:; font-src 'self'; style-src 'self'; script-src 'self'">
 <meta name="color-scheme" content="dark light">
 <title>New tab — Drift</title>
+<link rel="preload" href="../shared/fonts/bricolage-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="newtab.css">
 </head>
 <body>
-  <div class="backdrop" aria-hidden="true"></div>
   <main class="page">
     <header class="topbar">
-      <div class="brand"><img src="../shared/assets/drift-mark.svg" alt=""><span class="wm" role="img" aria-label="Drift">Dr<span class="wm-i" aria-hidden="true">ı</span>ft</span><span class="brand-sub-nt">Browser</span></div>
+      <span class="wm" role="img" aria-label="Drift">Dr<span class="wm-i" aria-hidden="true">ı</span>ft</span>
     </header>
 
-    <div class="stage">
-      <section class="hero">
-        <p class="greeting" id="greeting"></p>
-        <div class="clock" id="clock-wrap" aria-live="off">
-          <div class="clock-row"><div class="clock-time" id="clock"></div><span class="clock-period" id="clock-period"></span></div>
-          <div class="clock-day" id="day"></div>
-        </div>
-        <h1>Find your flow.</h1>
-        <p class="tagline">A quieter, faster way to move around the web.</p>
+    <section class="hero" aria-label="Start">
+      <div class="clock" id="clock-wrap" aria-live="off">
+        <p class="greeting"><span id="greeting"></span><span class="day" id="day"></span></p>
+        <div class="clock-row"><span class="clock-time" id="clock"></span><span class="clock-period" id="clock-period"></span></div>
+      </div>
+      <h1 class="headline" id="headline" hidden>Find your flow.</h1>
 
-        <form id="f" class="search" autocomplete="off" role="search">
-          <svg data-fa="search" class="search-icon"></svg>
-          <input id="q" type="text" placeholder="Search or enter a website address" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="suggest" aria-expanded="false" aria-label="Search or enter a website address">
-          <button type="button" id="engine-btn" class="engine" aria-haspopup="listbox" aria-expanded="false" aria-controls="engine-menu" title="Choose search engine"><span id="engine-name">DuckDuckGo</span><svg data-fa="down"></svg></button>
-          <button class="go" type="submit" aria-label="Search"><svg data-fa="arrowRight"></svg></button>
-          <ul id="suggest" class="popover suggest" role="listbox" hidden></ul>
-          <ul id="engine-menu" class="popover engine-menu" role="listbox" aria-label="Search engine" hidden></ul>
-        </form>
+      <!-- The tideline: today from midnight to midnight. The buoy marks now. -->
+      <div class="tideline" id="tideline" aria-hidden="true">
+        <span class="tide-fill" id="tide-fill"></span>
+        <span class="tide-buoy" id="tide-buoy"></span>
+        <span class="tide-tick t6">6</span>
+        <span class="tide-tick t12">12</span>
+        <span class="tide-tick t18">18</span>
+      </div>
 
-        <footer class="hints" aria-label="Keyboard shortcuts">
-          <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>K</kbd>Command palette</span>
-          <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>T</kbd>New tab</span>
-          <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>L</kbd>Address bar</span>
-          <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>D</kbd>Bookmark page</span>
-        </footer>
-      </section>
+      <form id="f" class="search" autocomplete="off" role="search">
+        <svg data-fa="search" class="search-icon"></svg>
+        <input id="q" type="text" placeholder="Search or type a web address" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="suggest" aria-expanded="false" aria-label="Search or type a web address">
+        <button type="button" id="engine-btn" class="engine" aria-haspopup="listbox" aria-expanded="false" aria-controls="engine-menu" title="Choose search engine"><span id="engine-name">DuckDuckGo</span><svg data-fa="down"></svg></button>
+        <ul id="suggest" class="popover suggest" role="listbox" hidden></ul>
+        <ul id="engine-menu" class="popover engine-menu" role="listbox" aria-label="Search engine" hidden></ul>
+      </form>
+    </section>
 
-      <section class="shortcuts" id="shortcuts" aria-label="Shortcuts">
-        <div class="section-head"><h2 id="sc-title">Quick access</h2><span class="section-hint" id="sc-hint"></span></div>
-        <div class="tiles" id="tiles"></div>
-      </section>
-    </div>
+    <section class="shortcuts" id="shortcuts" aria-labelledby="sc-title">
+      <div class="section-head"><h2 id="sc-title">Most visited</h2><span class="section-hint" id="sc-hint"></span></div>
+      <div class="tiles" id="tiles"></div>
+    </section>
+
+    <footer class="hints" aria-label="Keyboard shortcuts">
+      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>K</kbd>Command palette</span>
+      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>L</kbd>Address bar</span>
+      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>D</kbd>Bookmark this page</span>
+      <span class="hint"><kbd class="mod">Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd>Reopen closed tab</span>
+    </footer>
   </main>
 
   <dialog id="pin-dialog" class="pin-dialog" aria-labelledby="pin-title">
     <form id="pin-form" method="dialog" autocomplete="off">
-      <h3 id="pin-title">Add shortcut</h3>
+      <h3 id="pin-title">Add a shortcut</h3>
       <label>Name<input id="pin-name" type="text" maxlength="40" placeholder="Optional" spellcheck="false"></label>
       <label>Address<input id="pin-url" type="text" placeholder="example.com" spellcheck="false" required></label>
-      <p id="pin-error" class="pin-error" role="alert" hidden>Enter a valid website address.</p>
-      <div class="pin-actions"><button type="button" id="pin-cancel" class="btn">Cancel</button><button type="submit" class="btn primary">Add</button></div>
+      <p id="pin-error" class="pin-error" role="alert" hidden>Enter a web address, such as example.com.</p>
+      <div class="pin-actions"><button type="button" id="pin-cancel" class="btn">Cancel</button><button type="submit" class="btn primary">Add shortcut</button></div>
     </form>
   </dialog>
 <script src="../shared/icons.js"></script>

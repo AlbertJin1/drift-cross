@@ -4,7 +4,7 @@
 //   npm run test:memory
 
 const assert = require('node:assert/strict');
-const { planDiscards, measurePressure, DEFAULTS, normalizeTabOptimizationSettings, discardConfigFromSettings } = require('../src/main/memory-manager.js');
+const { planDiscards, planFreezes, measurePressure, DEFAULTS, normalizeTabOptimizationSettings, discardConfigFromSettings } = require('../src/main/memory-manager.js');
 
 const results = [];
 function test(name, fn) {
@@ -72,7 +72,7 @@ test('an empty or all-visible list plans nothing', () => {
 
 test('user settings normalize to safe defaults and bounded values', () => {
   assert.deepEqual(normalizeTabOptimizationSettings({ idleMinutes: 999, maxBackgroundLive: -1, pressureMode: 'unknown' }), {
-    enabled: true, idleMinutes: 3, maxBackgroundLive: 4, newTabIdleSeconds: 20,
+    enabled: true, freezeBackground: true, freezeAfterSeconds: 30, idleMinutes: 3, maxBackgroundLive: 4, newTabIdleSeconds: 20,
     recentGraceSeconds: 45, pressureMode: 'balanced', excludedHosts: []
   });
   assert.deepEqual(normalizeTabOptimizationSettings({ enabled: false, excludedHosts: ['Example.com', '*.docs.example.org', 'https://site.test/path', 'bad host'] }).excludedHosts,
@@ -103,6 +103,18 @@ test('aggressive pressure policy uses shorter thresholds and a larger release ba
   assert.equal(c.idleMsPressure1, 45 * 1000);
   assert.equal(c.idleMsPressure2, 20 * 1000);
   assert.equal(c.pressureReleasePerPass, 5);
+});
+
+test('background tabs freeze after the hidden delay; protected and visible tabs never freeze', () => {
+  const tabs = [tab(1, 40 * 1000), tab(2, 10 * 1000), tab(3, 60 * 1000, { visible: true }), tab(4, 60 * 1000, { audible: true }),
+    tab(5, 60 * 1000, { busy: true }), tab(6, 60 * 1000, { excluded: true }), tab(7, 60 * 1000, { frozen: true }), tab(8, 60 * 1000, { loading: true })];
+  assert.deepEqual(planFreezes(tabs, { now: NOW, afterMs: 30 * 1000 }), [1]);
+});
+test('freeze settings normalize to bounded values', () => {
+  const s = normalizeTabOptimizationSettings({ freezeBackground: false, freezeAfterSeconds: 7 });
+  assert.equal(s.freezeBackground, false);
+  assert.equal(s.freezeAfterSeconds, 30);
+  assert.equal(normalizeTabOptimizationSettings({ freezeAfterSeconds: 120 }).freezeAfterSeconds, 120);
 });
 
 const GB = 1024 * 1024; // in KB

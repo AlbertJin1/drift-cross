@@ -7,14 +7,43 @@ const { spawnDetachedConfirmed } = require('./update-launch');
 const { waitForUpdateHealthcheck } = require('./update-healthcheck');
 const { verifyUserWritableInstallDirectory } = require('./install-path');
 const { waitForProcessExit, writeHelperReadyMarker } = require('./update-helper-runtime');
+const { browserRegistrationCommands, browserUnregistrationCommands } = require('./registration');
 
 const APP_USER_MODEL_ID = 'org.drift.browser';
 const KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Drift';
 const RUN = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const isUninstall = process.argv.includes('--uninstall');
+const quietUninstall = isUninstall && process.argv.includes('--quiet');
 const srcDir = path.dirname(process.execPath); // the extracted app: it IS the payload (no second copy shipped)
 const defaultDir = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Drift');
 const startMenu = () => path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+const profileRoot = () => path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Drift');
+const taskbarPins = () => path.join(app.getPath('appData'), 'Microsoft', 'Internet Explorer', 'Quick Launch', 'User Pinned', 'TaskBar');
+// Folder size in bytes, without following links; stops early on very large trees so the UI never waits long.
+async function folderSize(dir, budget = { files: 40000 }) {
+  let total = 0;
+  let entries = [];
+  try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return 0; }
+  for (const entry of entries) {
+    if (budget.files-- <= 0) break;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) total += await folderSize(full, budget);
+    else if (entry.isFile()) { try { total += (await fs.promises.stat(full)).size; } catch { /* locked */ } }
+  }
+  return total;
+}
+// Leftovers from an interrupted update (Drift.old / Drift.update next to the install folder).
+function removeUpdateLeftovers(dir) {
+  for (const sibling of [`${dir}.old`, `${dir}.update`]) { try { fs.rmSync(sibling, { recursive: true, force: true }); } catch { /* retried next time */ } }
+}
+// Taskbar pins Windows made for Drift (including per-profile pins named "Drift - Work" etc.).
+function removeTaskbarPins() {
+  try {
+    for (const name of fs.readdirSync(taskbarPins())) {
+      if (/^Drift(?:\s.*)?\.lnk$/i.test(name)) { try { fs.rmSync(path.join(taskbarPins(), name), { force: true }); } catch {} }
+    }
+  } catch { /* no pins folder */ }
+}
 app.setPath('userData', path.join(os.tmpdir(), 'drift-setup-ui')); // never touch the real Drift profile
 if (isUninstall) process.chdir(os.tmpdir());
 let win;
@@ -92,8 +121,9 @@ const killInstalled = async (dir) => {
     `$root = ${psQuote(root)}`,
     '$deadline = [DateTime]::Now.AddSeconds(22)',
     'do {',
-    `  $procs = @(Get-CimInstance Win32_Process -Filter "Name='Drift.exe'" -ErrorAction Stop | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) })`,
-    '  foreach ($p in $procs) { & taskkill.exe /PID $p.ProcessId /T /F | Out-Null }',
+    // The uninstaller is itself the installed Drift.exe: never end this process or its own helper processes.
+    `  $procs = @(Get-CimInstance Win32_Process -Filter "Name='Drift.exe'" -ErrorAction Stop | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and $_.ProcessId -ne ${process.pid} -and $_.ParentProcessId -ne ${process.pid} })`,
+    '  foreach ($p in $procs) { & taskkill.exe /PID $p.ProcessId /F | Out-Null }',
     '  if ($procs.Count -eq 0) { exit 0 }',
     '  if ([DateTime]::Now -gt $deadline) { exit 1 }',
     '  Start-Sleep -Milliseconds 300',
@@ -151,6 +181,10 @@ app.whenReady().then(() => {
     runSilentUpdate();
     return;
   }
+  if (quietUninstall) {
+    runUninstall({ wipe: process.argv.includes('--wipe') }).then((r) => app.exit(r.ok ? 0 : 1));
+    return;
+  }
   win = new BrowserWindow({ width: 900, height: 580, frame: false, resizable: false, transparent: true, backgroundColor: '#00000000', hasShadow: false, show: false,
     icon: path.join(__dirname, '..', '..', 'build', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false } });
@@ -172,7 +206,13 @@ ipcMain.handle('browse', async (_e, cur) => {
     return null;
   }
 });
-ipcMain.handle('info', () => ({ uninstall: isUninstall, dir: defaultDir, version: app.getVersion() }));
+ipcMain.handle('info', () => ({ uninstall: isUninstall, dir: isUninstall ? srcDir : defaultDir, version: app.getVersion(), profileDir: profileRoot() }));
+// Shown on the uninstall screen so "also delete my data" is an informed choice.
+ipcMain.handle('profile-size', async () => {
+  const root = profileRoot();
+  if (!fs.existsSync(root)) return { exists: false, bytes: 0, dir: root };
+  return { exists: true, bytes: await folderSize(root), dir: root };
+});
 
 ipcMain.handle('install', async (_e, o) => {
   const send = (pct, phase) => win.webContents.send('progress', { pct, phase });
@@ -183,14 +223,15 @@ ipcMain.handle('install', async (_e, o) => {
     o = { ...o, dir: verifyUserWritableInstallDirectory(o?.dir || defaultDir, defaultDir) };
     if (!(await killInstalled(o.dir))) throw new Error('Drift is still running or Windows could not close it. Close Drift and retry the installation.');
     const files = walk(srcDir), total = files.reduce((s, f) => s + fs.statSync(f).size, 0) || 1;
-    const phases = ['Unfurling the sails', 'Gathering the wind', 'Setting the course', 'Trimming the lines'];
+    removeUpdateLeftovers(o.dir);
+    const phases = ['Copying the browser', 'Copying the browser', 'Copying the engine', 'Finishing the copy'];
     let done = 0, last = 0;
     for (const f of files) {
       const dest = path.join(o.dir, path.relative(srcDir, f));
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       await copy(f, dest, (n) => { done += n; const now = Date.now(); if (now - last > 80) { last = now; const p = done / total; send(4 + p * 82, phases[Math.min(3, Math.floor(p * 4))]); } });
     }
-    send(88, 'Leaving a trail');
+    send(88, 'Adding shortcuts');
     const exe = path.join(o.dir, 'Drift.exe');
     const link = (dir) => shell.writeShortcutLink(path.join(dir, 'Drift.lnk'), 'create', { target: exe, cwd: o.dir, icon: exe, description: 'Drift Browser', appUserModelId: APP_USER_MODEL_ID });
     if (o.desktop) link(app.getPath('desktop'));
@@ -199,33 +240,56 @@ ipcMain.handle('install', async (_e, o) => {
     await reg('Publisher', 'REG_SZ', 'Jessie Albert Regualos (Yotsuchi)'); await reg('InstallLocation', 'REG_SZ', o.dir);
     await reg('DisplayIcon', 'REG_SZ', exe); await reg('NoModify', 'REG_DWORD', 1); await reg('NoRepair', 'REG_DWORD', 1);
     await reg('UninstallString', 'REG_SZ', `"${exe}" --uninstall`); // installed Drift.exe doubles as the uninstaller
-    send(95, 'Making it yours');
-    const sd = path.join(process.env.APPDATA, 'Drift'), sf = path.join(sd, 'settings.json');
-    if (!fs.existsSync(sf)) { fs.mkdirSync(sd, { recursive: true }); fs.writeFileSync(sf, JSON.stringify({ colorTheme: o.theme, appearance: o.mode })); }
+    await reg('QuietUninstallString', 'REG_SZ', `"${exe}" --uninstall --quiet`);
+    await reg('EstimatedSize', 'REG_DWORD', Math.max(1, Math.round(total / 1024)));
+    await reg('InstallDate', 'REG_SZ', new Date().toISOString().slice(0, 10).replace(/-/g, ''));
+    send(92, 'Registering with Windows');
+    if (o.browser !== 0) { for (const args of browserRegistrationCommands(exe)) await run('reg', args); }
+    send(96, 'Applying your look');
+    const sd = profileRoot(), sf = path.join(sd, 'settings.json');
+    const themes = ['tide', 'violet', 'ocean', 'forest', 'rose', 'sunset', 'indigo', 'graphite', 'mint'];
+    if (!fs.existsSync(sf)) {
+      fs.mkdirSync(sd, { recursive: true });
+      // settingsVersion marks these as deliberate choices so the browser's first-run migration leaves them alone.
+      fs.writeFileSync(sf, JSON.stringify({ settingsVersion: 7, colorTheme: themes.includes(o.theme) ? o.theme : 'tide', appearance: ['dark', 'light', 'system'].includes(o.mode) ? o.mode : 'system' }));
+    }
     if (o.login) await run('reg', ['add', RUN, '/v', 'Drift', '/t', 'REG_SZ', '/d', `"${exe}"`, '/f']);
     send(100, 'Ready');
     return { ok: true, exe };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
-ipcMain.handle('uninstall', async (_e, o) => {
+// Removes the app and everything Setup or the updater created; the browsing profile only when asked.
+async function runUninstall(o = {}) {
+  const dir = srcDir;
+  const removed = [];
   try {
-    const dir = srcDir;
-    await killInstalled(dir);
-    for (const d of [app.getPath('desktop'), startMenu()]) { try { fs.rmSync(path.join(d, 'Drift.lnk')); } catch {} }
+    if (!(await killInstalled(dir))) return { ok: false, error: 'Drift is still open and Windows could not close it. Close every Drift window, then try again.' };
+    for (const d of [app.getPath('desktop'), startMenu()]) {
+      try { for (const name of fs.readdirSync(d)) if (/^Drift(?:\s.*)?\.lnk$/i.test(name)) fs.rmSync(path.join(d, name), { force: true }); } catch {}
+    }
+    removed.push('shortcuts');
+    removeTaskbarPins();
+    for (const args of browserUnregistrationCommands()) await run('reg', args);
     await run('reg', ['delete', KEY, '/f']);
     await run('reg', ['delete', RUN, '/v', 'Drift', '/f']);
-    if (o.wipe) fs.rmSync(path.join(process.env.APPDATA, 'Drift'), { recursive: true, force: true });
-    const bat = path.join(os.tmpdir(), 'drift-cleanup.bat'); // retries until this process has exited and the folder is free
+    removed.push('Windows registration');
+    // Downloaded installers, update logs and the differential cache are never personal data: always removed.
+    try { fs.rmSync(path.join(profileRoot(), 'Updates'), { recursive: true, force: true }); removed.push('update cache'); } catch {}
+    try { fs.rmSync(path.join(os.tmpdir(), 'drift-setup-ui'), { recursive: true, force: true }); } catch {}
+    removeUpdateLeftovers(dir);
+    if (o.wipe) { fs.rmSync(profileRoot(), { recursive: true, force: true }); removed.push('profile'); }
+    const bat = path.join(os.tmpdir(), `drift-cleanup-${process.pid}.bat`); // retries until this process has exited and the folder is free
     fs.writeFileSync(bat, `@echo off\r\nfor /l %%i in (1,1,90) do (\r\n  rmdir /s /q "${dir}" 2>nul\r\n  if not exist "${dir}" goto done\r\n  ping -n 2 127.0.0.1 >nul\r\n)\r\n:done\r\ndel "%~f0"\r\n`);
     // conhost --headless gives the helper (and its ping delays) a console that is never shown. A plain detached
     // cmd.exe opens a visible console, which Windows Terminal turns into a flashing "ping" window.
     const helper = spawn('conhost.exe', ['--headless', 'cmd.exe', '/c', bat], { detached: true, stdio: 'ignore', windowsHide: true, cwd: os.tmpdir() });
     helper.on('error', () => spawn('cmd.exe', ['/c', bat], { detached: true, stdio: 'ignore', windowsHide: true, cwd: os.tmpdir() }).unref());
     helper.unref();
-    return { ok: true };
+    return { ok: true, removed, keptProfile: o.wipe ? '' : profileRoot() };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
-});
+}
+ipcMain.handle('uninstall', (_e, o) => runUninstall(o || {}));
 
 ipcMain.handle('launch', (_e, p) => {
   const env = { ...process.env }; delete env.PORTABLE_EXECUTABLE_FILE; delete env.PORTABLE_EXECUTABLE_DIR; delete env.PORTABLE_EXECUTABLE_APP_FILENAME; // so Drift starts as the browser, not as setup

@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('setup', {
   browse: (cur) => ipcRenderer.invoke('browse', cur),
   install: (opts) => ipcRenderer.invoke('install', opts),
   uninstall: (opts) => ipcRenderer.invoke('uninstall', opts),
+  profileSize: () => ipcRenderer.invoke('profile-size'),
   launch: (p) => ipcRenderer.invoke('launch', p),
   win: (a) => ipcRenderer.send('win', a),
   onProgress: (cb) => ipcRenderer.on('progress', (_e, d) => cb(d)),

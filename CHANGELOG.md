@@ -1,3 +1,36 @@
+## 1.4.0 — Tideline
+
+### A new look, built as one system
+- Rewrote the browser stylesheet from scratch (2,000 layered lines with 57 `!important` overrides became one organised file). Every control now shares one set of tokens for colour, radius, motion and type.
+- New default theme, **Tide**: deep-water chrome, a buoy-yellow accent used sparingly and a sea-glass secondary, in dark and light. The eight earlier palettes are still available and were re-tuned so text on an accent fill is always readable (custom accents pick dark or light ink automatically).
+- Bundled interface fonts (both SIL Open Font License): **Drift Sans** (Instrument Sans) for the interface and **Drift Display** (Bricolage Grotesque) for headings, the wordmark and the clock. The old fonts remain under Settings > Appearance > Interface font.
+- The active tab is now "moored": it joins the toolbar and carries a short accent cap. Resting tabs are separated by hairlines. The other tab styles (card, pill, minimal) were redrawn to match.
+- The address bar shows the site's host in full weight and the rest of the address dimmed while you are not typing.
+- Every dropdown in Settings, the clear-data dialog and the bookmarks folder filter is now a fully styled list (Chromium's customizable select): own surface, hover and checked states, a checkmark, smooth open/close and keyboard support. Older engines fall back to a styled field.
+- Buttons were reduced to four consistent kinds (primary, secondary, row action, icon). Switches, checkboxes and radio buttons are custom-drawn and use the accent colour.
+- Menus, the open-tabs list, the tab hover card, find bar, dialogs and the command palette were restyled on one floating surface. All-caps labels were removed throughout.
+- New logo mark and application icons (`build/icon.*`).
+- New Tab page rebuilt around the **tideline**: a line from midnight to midnight under the clock, with a buoy marking the current time. Shortcuts are a single row of site chips that use the site's own icon when it has one.
+
+### Lower memory use
+- New first tier, **pause**: a background tab stops running scripts, timers and rendering after 30 seconds (configurable) but keeps its page exactly as it was, and resumes instantly when selected. Tabs playing audio, recording, downloading, loading or open in DevTools keep running. The existing sleep (discard) policy is unchanged and still applies after it.
+- Background pages hand back decoded images and cached resources 20 seconds after they are hidden.
+- Disabled Chromium features that hold memory a browser this size does not need: the pre-warmed spare renderer, the back/forward cache, speculative prerendering. Tabs on the same site now share one renderer process.
+- Tab hover thumbnails are captured at 480 px / quality 80 instead of 720 px / 92 (about a third of the memory per tab).
+- Settings > Tabs and memory shows live memory use, split between Drift itself and your tabs, with counts of running, paused and asleep tabs.
+
+### Startup, install, update and uninstall
+- The browser window appears as soon as its frame is ready. Only a first tab that is a real website waits (at most 3.5 s) for extensions; the New Tab page and Drift's own pages no longer wait.
+- Drift opens links and files passed to it: `Drift.exe https://…`, a file path, or a second launch while it is running.
+- Setup was redesigned to match: one-click install from the first screen, or options for accent, appearance, folder and shortcuts. Progress is drawn as the tideline.
+- Setup can list Drift in Windows **Default apps** (per-user, no administrator rights; Windows still asks before Drift becomes the default). Apps & features now shows an install size and date and supports quiet uninstall (`Drift.exe --uninstall --quiet [--wipe]`).
+- Uninstall now shows exactly what is removed and kept, with the size of your browsing data, and removes everything Setup and the updater created: shortcuts (including per-profile ones), taskbar pins, Windows registration, the update cache and leftover update folders. Your profile is kept unless you choose to delete it.
+- Fixed the uninstaller ending its own process: it is the installed Drift.exe, and the "close Drift" step matched it.
+- Redesigned the "Updating Drift" window and the startup splash.
+- Profiles still on the 1.3 out-of-the-box look (Violet, system font, Aurora New Tab) move to the new defaults once. Choices you made yourself are kept.
+- Added `npm run test:registration`; new freeze-policy tests in `npm run test:memory`.
+- Bumped the application and lockfile version to 1.4.0.
+
 ## 1.3.20 — Profile Fixes
 
 - Fixed "Enter a name for the profile." appearing even though a name was typed: the toolbar's profile label and the Add profile name box shared the same element id, so Create read the wrong element.

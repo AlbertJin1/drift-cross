@@ -18,6 +18,8 @@ const DEFAULTS = Object.freeze({
 
 const TAB_OPTIMIZATION_DEFAULTS = Object.freeze({
   enabled: true,
+  freezeBackground: true,
+  freezeAfterSeconds: 30,
   idleMinutes: 3,
   maxBackgroundLive: 4,
   newTabIdleSeconds: 20,
@@ -29,6 +31,7 @@ const ALLOWED_IDLE_MINUTES = new Set([0, 1, 2, 3, 5, 10, 15, 30, 60]);
 const ALLOWED_BACKGROUND_CAPS = new Set([0, 1, 2, 3, 4, 6, 8, 12]);
 const ALLOWED_NEW_TAB_SECONDS = new Set([0, 10, 20, 30, 60, 120]);
 const ALLOWED_GRACE_SECONDS = new Set([15, 30, 45, 60, 90, 120, 180]);
+const ALLOWED_FREEZE_SECONDS = new Set([10, 30, 60, 120, 300]);
 const HOST_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 
 function normalizeExcludedHosts(value) {
@@ -57,6 +60,8 @@ function normalizeTabOptimizationSettings(input = {}) {
   };
   return {
     enabled: value.enabled !== false,
+    freezeBackground: value.freezeBackground !== false,
+    freezeAfterSeconds: pick(value.freezeAfterSeconds, ALLOWED_FREEZE_SECONDS, TAB_OPTIMIZATION_DEFAULTS.freezeAfterSeconds),
     idleMinutes: pick(value.idleMinutes, ALLOWED_IDLE_MINUTES, TAB_OPTIMIZATION_DEFAULTS.idleMinutes),
     maxBackgroundLive: pick(value.maxBackgroundLive, ALLOWED_BACKGROUND_CAPS, TAB_OPTIMIZATION_DEFAULTS.maxBackgroundLive),
     newTabIdleSeconds: pick(value.newTabIdleSeconds, ALLOWED_NEW_TAB_SECONDS, TAB_OPTIMIZATION_DEFAULTS.newTabIdleSeconds),
@@ -129,6 +134,21 @@ function planDiscards(tabs, { now, pressure = 0, config = {} }) {
   return [...chosen.keys()];
 }
 
+/**
+ * The cheaper tier before discarding: a frozen background page keeps its DOM and scroll
+ * position but runs no script, timers or rendering, so Chromium can purge its caches
+ * and the tab resumes instantly instead of reloading.
+ * @param {Array<{id:number,lastActive:number,visible:boolean,audible?:boolean,busy?:boolean,excluded?:boolean,frozen?:boolean,loading?:boolean}>} tabs
+ * @param {{now:number, afterMs?:number}} options
+ * @returns {number[]} ids of tabs to freeze now
+ */
+function planFreezes(tabs, { now, afterMs = 30 * 1000 }) {
+  return tabs
+    .filter((tab) => !tab.visible && !tab.frozen && !tab.audible && !tab.busy && !tab.excluded && !tab.loading)
+    .filter((tab) => Math.max(0, now - tab.lastActive) >= afterMs)
+    .map((tab) => tab.id);
+}
+
 /** Reads system/application memory pressure. Level 2 = high, 1 = moderate, 0 = fine. */
 function measurePressure({ getSystemMemoryInfo, getAppMetrics, isWindows }) {
   const result = { level: 0, usedKB: 0, byPid: new Map() };
@@ -158,6 +178,7 @@ function measurePressure({ getSystemMemoryInfo, getAppMetrics, isWindows }) {
 
 module.exports = {
   planDiscards,
+  planFreezes,
   measurePressure,
   DEFAULTS,
   TAB_OPTIMIZATION_DEFAULTS,

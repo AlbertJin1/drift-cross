@@ -2,7 +2,7 @@
 
 Developed by **Jessie Albert Regualos** (aka **Yotsuchi**).
 
-A lightweight desktop browser for Windows, macOS and Linux, built on Electron with a plain HTML/CSS/JS interface. No framework, no runtime CDN, no account.
+A lightweight desktop browser for Windows, macOS and Linux, built on Electron with a plain HTML/CSS/JS interface. No framework, no runtime CDN, no account. Interface fonts (Instrument Sans, Bricolage Grotesque) are bundled under the SIL Open Font License in `src/renderer/shared/fonts`.
 
 MIT licensed. Node.js 20+ required to build.
 
@@ -15,8 +15,8 @@ MIT licensed. Node.js 20+ required to build.
 - **Privacy:** network-level ad/tracker blocking, a separate unsolicited pop-up blocker, a global switch and per-site ad-block exceptions.
 - **Extensions:** Chrome Web Store (Manifest V3) and unpacked extensions.
 - **Profiles:** separate browsing identities (work, personal, school...), each with its own sign-ins, bookmarks, history, settings and extensions.
-- **Customisation:** light, dark or system appearance, eight accent themes plus custom accent colors, interface font and text scale, density, corner style, tab appearance and width, chrome tint, motion controls, bookmark labels, New Tab backgrounds, layouts and tile sizes.
-- **Performance:** idle background tabs are discarded under a memory-aware policy, tab creation is lazy, and disk writes are coalesced and atomic.
+- **Customisation:** light, dark or system appearance, the Tide theme and eight more accent themes plus custom accent colors, interface font and text scale, density, corner style, tab appearance and width, chrome tint, motion controls, bookmark labels, New Tab backgrounds, layouts and tile sizes.
+- **Performance:** background tabs pause (no scripts, timers or rendering) and later sleep under a memory-aware policy; Chromium's spare renderer, back/forward cache and prerendering are off; same-site tabs share a process; tab creation is lazy and disk writes are coalesced and atomic. Settings > Tabs and memory shows live usage.
 - **Updates:** Windows releases use verified incremental binary-chunk updates when a compatible base installer is cached, with compressed ZIP and raw-installer fallbacks.
 
 ## Keyboard shortcuts

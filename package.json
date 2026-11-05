@@ -1,7 +1,7 @@
 {
   "name": "drift",
-  "version": "1.3.20",
-  "description": "Drift \u2014 a fast, cross-platform browser with a streamlined tab strip, persistent bookmarks, privacy protection, downloads, Chrome-compatible extensions, history, configurable settings, color themes, and context menus.",
+  "version": "1.4.0",
+  "description": "Drift — a fast, low-memory cross-platform browser with tab pausing and sleeping, persistent bookmarks, privacy protection, downloads, Chrome-compatible extensions, history, profiles, themes and context menus.",
   "main": "src/main/main.js",
   "license": "MIT",
   "author": {
@@ -20,7 +20,7 @@
     "test:gateway": "node scripts/test-gateway.cjs",
     "test:memory": "node scripts/test-memory.cjs",
     "test:storage": "node scripts/test-storage.cjs",
-    "test": "npm run test:updater && npm run test:differential && npm run test:telemetry && npm run test:reviews && npm run test:review-prompt && npm run test:gateway && npm run test:memory && npm run test:storage && npm run test:appearance && npm run test:restore && npm run test:installer-launch && npm run test:update-healthcheck && npm run test:update-helper-runtime && npm run test:responsive && npm run test:bookmarks-protection && npm run test:bookmark-bar && npm run test:profiles",
+    "test": "npm run test:updater && npm run test:differential && npm run test:telemetry && npm run test:reviews && npm run test:review-prompt && npm run test:gateway && npm run test:memory && npm run test:storage && npm run test:appearance && npm run test:restore && npm run test:installer-launch && npm run test:update-healthcheck && npm run test:update-helper-runtime && npm run test:responsive && npm run test:bookmarks-protection && npm run test:bookmark-bar && npm run test:profiles && npm run test:registration",
     "build:installer": "node scripts/build-installer.cjs",
     "test:reviews": "node scripts/test-reviews.cjs",
     "test:review-prompt": "node scripts/test-review-prompt.cjs",
@@ -33,7 +33,8 @@
     "test:differential": "node scripts/test-differential-update.cjs",
     "test:bookmark-bar": "node scripts/test-bookmark-bar.cjs",
     "test:update-helper-runtime": "node scripts/test-update-helper-runtime.cjs",
-    "test:profiles": "node scripts/test-profiles.cjs"
+    "test:profiles": "node scripts/test-profiles.cjs",
+    "test:registration": "node scripts/test-registration.cjs"
   },
   "dependencies": {
     "electron-chrome-web-store": "^0.13.0"

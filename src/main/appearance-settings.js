@@ -4,28 +4,28 @@ const DEFAULT_APPEARANCE_OPTIONS = Object.freeze({
   accentColor: '',
   density: 'comfortable',
   fontScale: 100,
-  fontFamily: 'system',
+  fontFamily: 'drift',
   cornerStyle: 'soft',
   tabStyle: 'underline',
   tabWidth: 'balanced',
   motion: 'full',
   chromeTint: 'balanced',
   bookmarkDisplay: 'labels',
-  newTabBackground: 'aurora',
+  newTabBackground: 'tide',
   newTabLayout: 'centered',
   newTabTileSize: 'medium'
 });
 
 const ENUMS = Object.freeze({
   density: ['compact', 'comfortable', 'spacious'],
-  fontFamily: ['system', 'inter', 'segoe', 'arial'],
+  fontFamily: ['drift', 'system', 'inter', 'segoe', 'arial'],
   cornerStyle: ['square', 'soft', 'rounded'],
   tabStyle: ['underline', 'card', 'pill', 'minimal'],
   tabWidth: ['compact', 'balanced', 'wide'],
   motion: ['full', 'reduced', 'off'],
   chromeTint: ['neutral', 'subtle', 'balanced', 'strong'],
   bookmarkDisplay: ['labels', 'icons'],
-  newTabBackground: ['aurora', 'midnight', 'paper', 'forest', 'sunset'],
+  newTabBackground: ['tide', 'aurora', 'midnight', 'paper', 'forest', 'sunset'],
   newTabLayout: ['centered', 'wide', 'compact'],
   newTabTileSize: ['small', 'medium', 'large']
 });

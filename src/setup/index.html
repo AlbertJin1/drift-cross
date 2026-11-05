@@ -1,121 +1,141 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Drift Setup</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self'">
 <style>
-:root{--a:#8b5cf6;--b:#63edda;--bg:#0b1020;--fg:#eef1ff;--mut:#98a0c4;--card:rgba(255,255,255,.06);--line:rgba(255,255,255,.12)}
-body.light{--bg:#f3f4fb;--fg:#161a33;--mut:#5b6286;--card:rgba(20,24,60,.05);--line:rgba(20,24,60,.14)}
+@font-face{font-family:"Drift Sans";font-weight:400 700;font-stretch:75% 100%;src:url(../renderer/shared/fonts/instrument-latin.woff2) format("woff2-variations")}
+@font-face{font-family:"Drift Display";font-weight:200 800;font-stretch:75% 100%;src:url(../renderer/shared/fonts/bricolage-latin.woff2) format("woff2-variations")}
+:root{--page:#0f1e24;--water:#0b171c;--panel:#183139;--hover:#22414b;--line:#25434c;--line2:#335862;--fg:#e4efec;--mut:#94adab;--faint:#6c8986;--a:#f2c230;--ink:#1a1500;--b:#6fd3bf;--err:#ff8a7a}
+body.light{--page:#eef3f2;--water:#e2eae9;--panel:#fff;--hover:#e6eeed;--line:#d3dfde;--line2:#b7c9c8;--fg:#0e2a31;--mut:#4d6a6e;--faint:#7a9396;--a:#8f6200;--ink:#fff;--b:#0f7f78;--err:#c2392a}
 *{box-sizing:border-box;margin:0}html,body{height:100%}
-body{font:15px/1.5 "Segoe UI Variable","Segoe UI",system-ui,sans-serif;color:var(--fg);background:transparent;overflow:hidden;user-select:none}
-#win{position:absolute;inset:0;border-radius:24px;background:var(--bg);overflow:hidden;transition:background .5s}#win::after{content:'';position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px var(--line);pointer-events:none;z-index:9}
-canvas{position:absolute;inset:0;width:100%;height:100%}
-#bar{position:absolute;top:0;left:0;right:0;height:46px;-webkit-app-region:drag;display:flex;justify-content:flex-end;align-items:center;padding:0 14px;gap:6px;z-index:5}
-#bar button{-webkit-app-region:no-drag;width:30px;height:30px;border:0;border-radius:50%;background:var(--card);color:var(--fg);cursor:pointer;font-size:14px}
-#bar button:hover{background:var(--a);color:#fff}
-.scene{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 64px;opacity:0;pointer-events:none;transform:translateX(40px);transition:.6s cubic-bezier(.2,.8,.2,1)}
+body{font:14px/1.5 "Drift Sans","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;color:var(--fg);background:transparent;overflow:hidden;user-select:none;-webkit-font-smoothing:antialiased}
+#win{position:absolute;inset:0;border-radius:16px;overflow:hidden;background:linear-gradient(180deg,var(--page) 0 80%,var(--line2) 80% calc(80% + 1px),var(--water) calc(80% + 1px) 100%);transition:background .4s}
+#win::after{content:'';position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px var(--line2);pointer-events:none;z-index:9}
+#bar{position:absolute;top:0;left:0;right:0;height:52px;-webkit-app-region:drag;display:flex;align-items:center;padding:0 10px 0 28px;gap:6px;z-index:5}
+.wm{font:720 19px/1 "Drift Display",system-ui,sans-serif;font-stretch:88%;letter-spacing:-.035em;margin-right:auto}
+.wm i{font-style:normal;background:radial-gradient(circle at center,var(--a) 0 58%,transparent 64%) 50% .04em/.22em .22em no-repeat}
+#ver{color:var(--faint);font-size:12px;margin-right:8px;font-variant-numeric:tabular-nums}
+#bar button{-webkit-app-region:no-drag;width:34px;height:34px;border:0;border-radius:8px;background:transparent;color:var(--mut);cursor:pointer;font-size:15px}
+#bar button:hover{background:var(--hover);color:var(--fg)}#xb:hover{background:#e81123!important;color:#fff!important}
+.scene{position:absolute;left:0;right:0;top:52px;bottom:20%;display:flex;flex-direction:column;justify-content:center;padding:0 64px 10px;opacity:0;pointer-events:none;transform:translateY(10px);transition:opacity .35s ease,transform .45s cubic-bezier(.22,1,.36,1)}
 .scene.on{opacity:1;pointer-events:auto;transform:none}
-.scene.out{transform:translateX(-40px)}
-.k{letter-spacing:.3em;text-transform:uppercase;font-size:11px;color:var(--b);font-weight:600;margin-bottom:14px}
-h1{font-size:54px;line-height:1.05;font-weight:700;letter-spacing:-.03em;max-width:560px}
-h1 em{font-style:normal;background:linear-gradient(100deg,var(--b),var(--a));-webkit-background-clip:text;color:transparent}
-p.s{color:var(--mut);max-width:430px;margin:16px 0 30px;font-size:16px}
-.btn{align-self:flex-start;border:0;border-radius:999px;padding:14px 30px;font:600 15px inherit;font-family:inherit;color:#fff;cursor:pointer;background:linear-gradient(100deg,var(--a),color-mix(in srgb,var(--a) 60%,var(--b)));box-shadow:0 10px 30px -8px var(--a);transition:.25s}
-.btn:hover{transform:translateY(-2px) scale(1.03)}.btn.ghost{background:var(--card);box-shadow:none;color:var(--fg)}
-.row{display:flex;gap:12px;align-items:center}
-.sw{display:flex;gap:12px;margin:6px 0 22px}
-.sw button{width:36px;height:36px;border-radius:50%;border:0;padding:0;cursor:pointer;background-repeat:no-repeat;background-origin:border-box;transition:.25s;box-shadow:0 0 0 0 var(--bg),0 0 0 0 var(--fg)}
-.sw button:hover{transform:scale(1.12)}.sw button.on{box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--fg)}
-button:disabled{opacity:.3;cursor:not-allowed}button:focus-visible,.pill:focus-visible{outline:2px solid var(--b);outline-offset:3px}
-.pill svg{width:15px;height:15px;fill:currentColor;stroke:none}
-#dots{position:absolute;left:64px;bottom:30px;display:flex;gap:8px;z-index:4;transition:.4s}#dots b{width:8px;height:8px;border-radius:9px;background:var(--line);transition:.4s}#dots b.on{width:26px;background:linear-gradient(90deg,var(--b),var(--a))}
-#pv{position:absolute;right:52px;top:50%;width:290px;margin-top:-135px;opacity:0;transform:translateY(24px) scale(.96);transition:.7s cubic-bezier(.2,.8,.2,1);z-index:2;pointer-events:none}#pv.on{opacity:1;transform:none}
-.pw{border-radius:16px;background:color-mix(in srgb,var(--fg) 7%,var(--bg));border:1px solid var(--line);overflow:hidden;box-shadow:0 30px 60px -22px color-mix(in srgb,var(--a) 60%,transparent)}
-.pt{display:flex;align-items:flex-end;gap:5px;padding:9px 10px 0}.pt i{width:8px;height:8px;border-radius:50%;background:var(--line);margin:0 2px 12px 0}.tab{margin-left:8px;font-size:11px;padding:6px 14px;border-radius:9px 9px 0 0;background:var(--bg);border-top:2px solid var(--a)}
-.pa{height:26px;margin:0 10px 10px;border-radius:13px;background:var(--card);position:relative}.pa:after{content:'';position:absolute;right:9px;top:8px;width:10px;height:10px;border-radius:50%;background:var(--a)}
-.pb{padding:18px 18px 22px;background:var(--bg)}.g{font-size:21px;font-weight:700;letter-spacing:-.02em;margin-bottom:12px}.g em{font-style:normal;color:var(--a)}
-.ps{height:34px;border-radius:17px;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 5px 0 14px;font-size:11px;color:var(--mut)}.ps u{width:24px;height:24px;border-radius:50%;background:var(--a)}
-.sc{display:flex;gap:10px;margin-top:16px}.sc i{width:38px;height:38px;border-radius:12px;background:color-mix(in srgb,var(--a) 24%,transparent)}.pl{text-align:center;font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--mut);margin-top:14px}
-.lbl{font-size:12px;color:var(--mut);letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px}
-.pill{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:999px;background:var(--card);border:1px solid var(--line);cursor:pointer;margin:0 8px 8px 0;font-size:14px;transition:.2s}
-.pill.on{background:var(--a);border-color:var(--a);color:#fff}
-.path{display:flex;gap:8px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:8px 8px 8px 16px;max-width:450px;margin-bottom:22px;font-size:13px}
-.path span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
-.path button{border:0;border-radius:10px;padding:7px 14px;background:var(--a);color:#fff;cursor:pointer;font:inherit;font-size:13px}
-#logo{position:absolute;right:70px;top:50%;width:230px;height:230px;margin-top:-115px;z-index:2;transition:.8s cubic-bezier(.2,.8,.2,1)}
-#logo svg{width:100%;height:100%;overflow:visible;filter:drop-shadow(0 20px 40px color-mix(in srgb,var(--a) 55%,transparent));animation:fl 5s ease-in-out infinite}
-@keyframes fl{50%{transform:translateY(-12px) rotate(1.5deg)}}
-.pct{font-size:96px;font-weight:700;letter-spacing:-.05em;line-height:1}.pct small{font-size:32px;color:var(--mut)}
-#phase{color:var(--b);font-size:16px;margin-top:8px;height:24px}
-.track{height:4px;width:440px;border-radius:9px;background:var(--card);margin-top:26px;overflow:hidden}
-.track b{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--b),var(--a));border-radius:9px;transition:width .3s}
-.err{color:#ff7d8d;margin-bottom:18px;max-width:480px}
-#credit{position:absolute;right:30px;bottom:24px;z-index:4;font-size:11.5px;color:var(--mut);letter-spacing:.02em;text-align:right;line-height:1.4;pointer-events:none}#credit b{color:var(--fg);font-weight:600}#credit em{font-style:normal;color:var(--b);font-weight:600}
-body.light .k,body.light #phase,body.light #credit em{color:var(--a)}</style></head><body>
-<div id="win"><canvas id="c"></canvas>
-<div id="bar"><button onclick="setup.win('min')" title="Minimize">–</button><button id="xb" onclick="setup.win('close')" title="Close">✕</button></div>
-<div id="credit">Developed by <b>Jessie Albert Regualos</b><br>aka <em>Yotsuchi</em></div>
-<div id="dots"><b></b><b></b><b></b><b></b></div>
-<div id="pv"><div class="pw"><div class="pt"><i></i><i></i><i></i><span class="tab">New tab</span></div><div class="pa"></div><div class="pb"><div class="g">Good <em>evening</em></div><div class="ps">Search the web<u></u></div><div class="sc"><i></i><i></i><i></i><i></i></div></div></div><div class="pl">Live preview</div></div>
-<div id="logo"><svg viewBox="40 90 380 330"><defs>
-<linearGradient id="w" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#64f0de"/><stop offset=".55" stop-color="#4dc7f4"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
-<linearGradient id="l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#dce6ff"/></linearGradient>
-<clipPath id="fill"><rect id="fr" x="0" y="0" width="500" height="0"/></clipPath></defs>
-<g fill="none" stroke="url(#w)" stroke-width="19" stroke-linecap="round"><path d="M65 192C105 171 143 168 184 180"/><path d="M53 247C98 223 142 220 190 233"/><path d="M75 302C112 283 151 281 192 292"/></g>
-<path d="M174 112H274C356 112 408 167 408 256 408 345 356 400 274 400H174Z" fill="url(#l)" opacity=".16"/>
-<g clip-path="url(#fill)"><path d="M174 112H274C356 112 408 167 408 256 408 345 356 400 274 400H174Z" fill="url(#l)"/></g>
-<path d="M235 173H269C321 173 350 204 350 256 350 308 321 339 269 339H235Z" fill="var(--bg)"/><circle cx="395" cy="112" r="14" fill="#63edda"/></svg></div>
+h1{font:600 52px/1.02 "Drift Display",system-ui,sans-serif;font-stretch:82%;letter-spacing:-.03em;max-width:540px;text-wrap:balance}
+p.s{color:var(--mut);max-width:470px;margin:14px 0 28px;font-size:15.5px}
+.btn{height:44px;padding:0 22px;border:0;border-radius:10px;font:600 14.5px "Drift Sans",system-ui,sans-serif;color:var(--ink);background:var(--a);cursor:pointer;box-shadow:inset 0 -2px 0 rgba(0,0,0,.14);transition:background .15s,transform .12s}
+.btn:hover{background:color-mix(in srgb,var(--a) 88%,white)}.btn:active{transform:translateY(1px)}
+.btn.ghost{color:var(--fg);background:transparent;box-shadow:inset 0 0 0 1px var(--line2)}.btn.ghost:hover{background:var(--hover)}
+.btn.danger{color:#fff;background:#c2392a}.btn.danger:hover{background:#d4483a}
+.row{display:flex;gap:10px;align-items:center}
+button:disabled{opacity:.35;cursor:not-allowed}button:focus-visible,.opt:focus-visible,.sw button:focus-visible{outline:2px solid var(--a);outline-offset:3px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:26px 40px;max-width:760px}
+.lbl{font-size:12.5px;color:var(--mut);font-weight:600;margin-bottom:9px}
+.sw{display:flex;flex-wrap:wrap;gap:8px}
+.sw button{width:30px;height:30px;border-radius:50%;border:0;padding:0;cursor:pointer;transition:transform .15s}
+.sw button:hover{transform:scale(1.1)}.sw button.on{box-shadow:0 0 0 2px var(--page),0 0 0 4px var(--fg)}
+.seg{display:inline-flex;padding:3px;border-radius:10px;background:var(--panel);box-shadow:inset 0 0 0 1px var(--line)}
+.seg button{height:32px;padding:0 14px;border:0;border-radius:8px;background:transparent;color:var(--mut);font:600 13px "Drift Sans",system-ui;cursor:pointer}
+.seg button.on{color:var(--fg);background:var(--hover)}
+.path{display:flex;gap:8px;align-items:center;height:42px;padding:0 5px 0 13px;border-radius:10px;background:var(--panel);box-shadow:inset 0 0 0 1px var(--line);font-size:12.5px}
+.path span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left;font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--mut)}
+.path button{height:32px;padding:0 12px;border:0;border-radius:7px;background:var(--hover);color:var(--fg);cursor:pointer;font:600 12.5px "Drift Sans",system-ui}
+.opts{display:flex;flex-direction:column;gap:2px}
+.opt{display:flex;align-items:center;gap:11px;min-height:34px;padding:0 8px;margin:0 -8px;border-radius:8px;cursor:pointer;font-size:13.5px}
+.opt:hover{background:var(--hover)}
+.opt i{width:18px;height:18px;flex:none;border-radius:5px;box-shadow:inset 0 0 0 1.5px var(--line2);display:grid;place-items:center}
+.opt.on i{background:var(--a);box-shadow:none}.opt.on i::after{content:'';width:4px;height:8px;margin-top:-2px;border-right:2px solid var(--ink);border-bottom:2px solid var(--ink);transform:rotate(45deg)}
+.opt small{color:var(--faint);font-size:12px;margin-left:auto}
+.foot{margin-top:28px}.note{color:var(--faint);font-size:12.5px;margin-left:6px}
+/* progress: the tideline */
+.pct{font:300 104px/.85 "Drift Display",system-ui;font-stretch:75%;letter-spacing:-.02em;font-variant-numeric:tabular-nums}.pct small{font-size:30px;color:var(--mut);margin-left:4px}
+#phase{color:var(--mut);font-size:15px;margin-top:14px;height:24px}
+.tide{position:relative;height:16px;margin-top:22px;max-width:640px}
+.tide::before{content:'';position:absolute;left:0;right:0;top:7px;height:1px;background:var(--line2)}
+.tide b{position:absolute;left:0;top:6px;height:3px;width:0;border-radius:2px;background:var(--a);transition:width .25s ease}
+.tide u{position:absolute;top:1px;left:0;width:13px;height:13px;margin-left:-6px;border-radius:50%;background:var(--a);box-shadow:0 0 0 4px var(--page);transition:left .25s ease}
+.err{color:var(--err);margin:-12px 0 18px;max-width:560px;font-size:13.5px;user-select:text}
+.list{display:grid;grid-template-columns:1fr 1fr;gap:20px 36px;max-width:720px;margin:4px 0 22px}
+.list h3{font:600 13px "Drift Sans",system-ui;color:var(--mut);margin-bottom:6px}
+.list li{list-style:none;font-size:13.5px;line-height:1.75}.list ul{padding:0}
+.list li::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;margin:0 10px 1px 0;background:var(--line2)}
+.list .go li::before{background:var(--b)}
+#mark{position:absolute;right:72px;bottom:calc(20% + 34px);width:150px;height:150px;z-index:2;transition:opacity .35s ease,transform .45s cubic-bezier(.22,1,.36,1)}#mark.away{opacity:0;transform:translateY(12px)}
+#credit{position:absolute;right:26px;bottom:18px;z-index:4;font-size:11.5px;color:var(--faint);pointer-events:none}#credit b{color:var(--mut);font-weight:600}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style></head><body>
+<div id="win">
+<div id="bar"><span class="wm" aria-label="Drift">Dr<i>ı</i>ft</span><span id="ver"></span><button onclick="setup.win('min')" title="Minimize" aria-label="Minimize">–</button><button id="xb" onclick="setup.win('close')" title="Close" aria-label="Close">✕</button></div>
+<img id="mark" src="../renderer/shared/assets/drift-mark.svg" alt="">
+<div id="credit">Made by <b>Jessie Albert Regualos</b> (Yotsuchi)</div>
 
-<section class="scene" id="s0"><div class="k">Drift Browser · <span id="ver"></span></div><h1>Let the web <em>flow</em> past you.</h1>
-<p class="s">A fast, quiet browser by Jessie Albert Regualos (Yotsuchi). Setup takes under a minute and needs no administrator rights.</p><button class="btn" onclick="go(1)">Begin →</button></section>
+<section class="scene" id="s0">
+  <h1>A browser that stays out of your way.</h1>
+  <p class="s">Drift pauses the tabs you are not using, so the one in front of you stays fast. Setup takes under a minute and needs no administrator rights.</p>
+  <div class="row"><button class="btn" onclick="install()">Install Drift</button><button class="btn ghost" onclick="go(1)">Choose options</button></div>
+</section>
 
-<section class="scene" id="s1"><div class="k">Make it yours</div>
-<div class="lbl">Accent</div><div class="sw" id="sw"></div>
-<div class="lbl">Look</div><div><span class="pill" data-m="dark"><svg viewBox="0 0 512 512"><path d="M283.211 512c78.962 0 151.079-35.925 198.857-94.792 7.068-8.708-.639-21.43-11.562-19.35-124.203 23.654-238.262-71.576-238.262-196.954 0-72.222 38.662-138.635 101.498-174.394 9.686-5.512 7.25-20.197-3.756-22.23A258.156 258.156 0 0 0 283.211 0c-141.309 0-256 114.511-256 256 0 141.309 114.511 256 256 256z"></path></svg>Dark</span><span class="pill" data-m="light"><svg viewBox="0 0 512 512"><path d="M256 160c-52.9 0-96 43.1-96 96s43.1 96 96 96 96-43.1 96-96-43.1-96-96-96zm246.4 80.5l-94.7-47.3 33.5-100.4c4.5-13.6-8.4-26.5-21.9-21.9l-100.4 33.5-47.4-94.8c-6.4-12.8-24.6-12.8-31 0l-47.3 94.7L92.7 70.8c-13.6-4.5-26.5 8.4-21.9 21.9l33.5 100.4-94.7 47.4c-12.8 6.4-12.8 24.6 0 31l94.7 47.3-33.5 100.5c-4.5 13.6 8.4 26.5 21.9 21.9l100.4-33.5 47.3 94.7c6.4 12.8 24.6 12.8 31 0l47.3-94.7 100.4 33.5c13.6 4.5 26.5-8.4 21.9-21.9l-33.5-100.4 94.7-47.3c13-6.5 13-24.7.2-31.1zm-155.9 106c-49.9 49.9-131.1 49.9-181 0-49.9-49.9-49.9-131.1 0-181 49.9-49.9 131.1-49.9 181 0 49.9 49.9 49.9 131.1 0 181z"></path></svg>Light</span><span class="pill" data-m="system"><svg viewBox="0 0 576 512"><path d="M528 0H48C21.5 0 0 21.5 0 48v320c0 26.5 21.5 48 48 48h192l-16 48h-72c-13.3 0-24 10.7-24 24s10.7 24 24 24h272c13.3 0 24-10.7 24-24s-10.7-24-24-24h-72l-16-48h192c26.5 0 48-21.5 48-48V48c0-26.5-21.5-48-48-48zm-16 352H64V64h448v288z"></path></svg>Match system</span></div>
-<div class="lbl" style="margin-top:8px">Install to</div><div class="path"><span id="dir"></span><button onclick="browse()">Change</button></div>
-<div><span class="pill on" data-o="desktop">Desktop shortcut</span><span class="pill on" data-o="startMenu">Start menu</span><span class="pill" data-o="login">Launch at login</span></div>
-<div class="row" style="margin-top:14px"><button class="btn ghost" onclick="go(0)">Back</button><button class="btn" onclick="install()">Install Drift</button><span style="color:var(--mut);font-size:12px">about 300 MB · no admin needed</span></div></section>
+<section class="scene" id="s1">
+  <div class="grid">
+    <div><div class="lbl">Accent colour</div><div class="sw" id="sw"></div></div>
+    <div><div class="lbl">Appearance</div><div class="seg" id="seg"><button data-m="system">Match Windows</button><button data-m="dark">Dark</button><button data-m="light">Light</button></div></div>
+    <div><div class="lbl">Install folder</div><div class="path"><span id="dir"></span><button onclick="browse()">Change</button></div></div>
+    <div class="opts">
+      <div class="lbl">Options</div>
+      <div class="opt on" data-o="desktop" tabindex="0" role="checkbox" aria-checked="true"><i></i>Desktop shortcut</div>
+      <div class="opt on" data-o="startMenu" tabindex="0" role="checkbox" aria-checked="true"><i></i>Start menu shortcut</div>
+      <div class="opt on" data-o="browser" tabindex="0" role="checkbox" aria-checked="true"><i></i>List Drift in Windows default apps<small>You still choose</small></div>
+      <div class="opt" data-o="login" tabindex="0" role="checkbox" aria-checked="false"><i></i>Open Drift when I sign in</div>
+    </div>
+  </div>
+  <div class="row foot"><button class="btn" onclick="install()">Install Drift</button><button class="btn ghost" onclick="go(0)">Back</button><span class="note">About 300 MB on disk</span></div>
+</section>
 
-<section class="scene" id="s2"><div class="k">Installing</div><div class="pct"><span id="n">0</span><small>%</small></div><div id="phase"></div><div class="track"><b id="bar2"></b></div></section>
+<section class="scene" id="s2">
+  <div class="pct"><span id="n">0</span><small>%</small></div>
+  <div id="phase">Getting ready</div>
+  <div class="tide"><b id="tb"></b><u id="tu"></u></div>
+</section>
 
-<section class="scene" id="s3"><div class="k" id="dk">All set</div><h1 id="dh">Drift is <em>ready.</em></h1><p class="s" id="dp">Your bookmarks and settings live separately from the app, so updates never touch them.</p><div id="derr" class="err"></div>
-<div class="row"><button class="btn" id="dbtn">Launch Drift</button><button class="btn ghost" onclick="setup.win('close')">Close</button></div></section>
+<section class="scene" id="s3">
+  <h1 id="dh">Drift is installed.</h1>
+  <p class="s" id="dp">Your bookmarks and settings are stored separately from the app, so updates never touch them.</p>
+  <div id="derr" class="err"></div>
+  <div class="row"><button class="btn" id="dbtn">Open Drift</button><button class="btn ghost" onclick="setup.win('close')">Close</button></div>
+</section>
 
-<section class="scene" id="s4"><div class="k">Uninstall</div><h1>Leaving <em>so soon?</em></h1><p class="s">This removes the Drift app from your PC. Your profile can stay for a future return.</p>
-<div><span class="pill" id="wipe">Also delete bookmarks, history & settings</span></div>
-<div class="row" style="margin-top:14px"><button class="btn ghost" onclick="setup.win('close')">Keep Drift</button><button class="btn" onclick="uninstall()">Remove Drift</button></div></section>
+<section class="scene" id="s4">
+  <h1>Remove Drift from this PC?</h1>
+  <div class="list" style="margin-top:22px">
+    <div class="go"><h3>Removed</h3><ul><li>The Drift app and its shortcuts</li><li>Drift's entries in Windows settings</li><li>Downloaded updates and logs</li></ul></div>
+    <div><h3>Kept unless you choose otherwise</h3><ul><li>Bookmarks, history and passwords</li><li>Settings, profiles and extensions</li><li id="psize">Measuring your browsing data…</li></ul></div>
+  </div>
+  <div class="opts" style="max-width:520px;margin-bottom:22px"><div class="opt" id="wipe" tabindex="0" role="checkbox" aria-checked="false"><i></i>Also delete my browsing data</div></div>
+  <div id="uerr" class="err"></div>
+  <div class="row"><button class="btn danger" id="ubtn" onclick="uninstall()">Remove Drift</button><button class="btn ghost" onclick="setup.win('close')">Keep Drift</button></div>
+</section>
 </div>
 <script>
-const T={violet:['#8b5cf6','#63edda'],ocean:['#0ea5e9','#5eead4'],forest:['#22a06b','#a3e635'],rose:['#f43f7e','#fda4af'],sunset:['#f97316','#fcd34d'],indigo:['#6366f1','#67e8f9'],graphite:['#64748b','#cbd5e1'],mint:['#10b981','#99f6e4']};
-const st={theme:'violet',mode:'dark',dir:'',desktop:1,startMenu:1,login:0};let cur=0,pct=0,target=0,burst=0,speed=1;
+const T={tide:['#f2c230','#8f6200'],violet:['#b49cff','#6a4fe0'],ocean:['#6cc8f0','#1b7fb0'],forest:['#6ad8a8','#1d8760'],rose:['#ff92ac','#c93763'],sunset:['#ffad72','#c4561f'],indigo:['#98abff','#4659d1'],graphite:['#c3ccd8','#4e5a6c'],mint:['#6ad9d5','#137f80']};
+const st={theme:'tide',mode:'system',dir:'',desktop:1,startMenu:1,browser:1,login:0};let cur=0,pct=0,target=0;
 const $=id=>document.getElementById(id),S=[...document.querySelectorAll('.scene')];
-function go(i){S[cur].classList.remove('on');S[cur].classList.add('out');const p=cur;setTimeout(()=>S[p].classList.remove('out'),600);cur=i;S[i].classList.add('on');
- const l=$('logo').style;l.right=i==0||i==3||i==4?'70px':i==2?'70px':'-40px';l.opacity=i==1?0:1;$('pv').classList.toggle('on',i==1);$('dots').style.opacity=i==4?0:1;document.querySelectorAll('#dots b').forEach((d,j)=>d.classList.toggle('on',j==i));}
-function theme(){const[a,b]=T[st.theme];const r=document.body.style;r.setProperty('--a',a);r.setProperty('--b',b);
- const light=st.mode=='light'||(st.mode=='system'&&!matchMedia('(prefers-color-scheme:dark)').matches);document.body.classList.toggle('light',light);
- document.querySelectorAll('.sw button').forEach(e=>e.classList.toggle('on',e.dataset.t==st.theme));document.querySelectorAll('[data-m]').forEach(e=>e.classList.toggle('on',e.dataset.m==st.mode));}
-Object.entries(T).forEach(([k,[a,b]])=>{const i=document.createElement('button');i.setAttribute('aria-label',k);i.dataset.t=k;i.title=k;i.style.background=`linear-gradient(135deg,${a},${b})`;i.onclick=()=>{st.theme=k;theme();burst=1};$('sw').append(i)});
+function go(i){S[cur].classList.remove('on');cur=i;S[i].classList.add('on');$('mark').classList.toggle('away',i==1||i==2||i==4);}
+function isLight(){return st.mode=='light'||(st.mode=='system'&&matchMedia('(prefers-color-scheme: light)').matches)}
+function theme(){const light=isLight();document.body.classList.toggle('light',light);const[d,l]=T[st.theme];const r=document.body.style;r.setProperty('--a',light?l:d);
+ const hex=(light?l:d).slice(1),lum=[0,2,4].map(o=>{const c=parseInt(hex.slice(o,o+2),16)/255;return c<=.03928?c/12.92:((c+.055)/1.055)**2.4});r.setProperty('--ink',.2126*lum[0]+.7152*lum[1]+.0722*lum[2]>.36?'#14130b':'#fff');
+ document.querySelectorAll('.sw button').forEach(e=>e.classList.toggle('on',e.dataset.t==st.theme));document.querySelectorAll('[data-m]').forEach(e=>e.classList.toggle('on',e.dataset.m==st.mode))}
+Object.entries(T).forEach(([k,[d]])=>{const i=document.createElement('button');i.setAttribute('aria-label',k[0].toUpperCase()+k.slice(1));i.dataset.t=k;i.title=i.getAttribute('aria-label');i.style.background=d;i.onclick=()=>{st.theme=k;theme()};$('sw').append(i)});
 document.querySelectorAll('[data-m]').forEach(e=>e.onclick=()=>{st.mode=e.dataset.m;theme()});
-document.querySelectorAll('[data-o]').forEach(e=>e.onclick=()=>{e.classList.toggle('on');st[e.dataset.o]=+e.classList.contains('on')});
+matchMedia('(prefers-color-scheme: light)').addEventListener('change',theme);
+function toggle(e){e.classList.toggle('on');e.setAttribute('aria-checked',String(e.classList.contains('on')));if(e.dataset.o)st[e.dataset.o]=+e.classList.contains('on')}
+document.querySelectorAll('.opt').forEach(e=>{e.onclick=()=>toggle(e);e.onkeydown=ev=>{if(ev.key===' '||ev.key==='Enter'){ev.preventDefault();toggle(e)}}});
 async function browse(){const p=await setup.browse(st.dir);if(p){st.dir=p;$('dir').textContent=p}}
-function prog(p,ph){target=p;if(ph)$('phase').textContent=ph}
-async function install(){pct=0;target=0;$('xb').disabled=true;go(2);speed=3;setup.onProgress(d=>prog(d.pct,d.phase));const r=await setup.install(st);
- setTimeout(()=>done(r),900)}
-function done(r){speed=1;burst=1;$('xb').disabled=false;$('dh').innerHTML='Drift is <em>ready.</em>';$('dp').textContent='Your bookmarks and settings live separately from the app, so updates never touch them.';go(3);if(!r.ok){$('dh').innerHTML='Something <em>snagged.</em>';$('dp').textContent='';$('derr').textContent=r.error;$('dbtn').textContent='Try again';$('dbtn').onclick=()=>{$('derr').textContent='';go(1)};return}
+function paint(){pct+=(target-pct)*.12;if(Math.abs(target-pct)<.2)pct=target;$('n').textContent=Math.round(pct);$('tb').style.width=pct+'%';$('tu').style.left=pct+'%';if(cur==2)requestAnimationFrame(paint)}
+async function install(){pct=0;target=0;$('xb').disabled=true;go(2);requestAnimationFrame(paint);setup.onProgress(d=>{target=d.pct;if(d.phase)$('phase').textContent=d.phase});const r=await setup.install(st);setTimeout(()=>done(r),500)}
+function done(r){$('xb').disabled=false;go(3);if(!r.ok){$('dh').textContent='Drift could not be installed.';$('dp').textContent='Nothing was changed on this PC.';$('derr').textContent=r.error;$('dbtn').textContent='Try again';$('dbtn').onclick=()=>{$('derr').textContent='';go(1)};return}
  $('dbtn').onclick=()=>setup.launch(r.exe)}
-async function uninstall(){const r=await setup.uninstall({wipe:$('wipe').classList.contains('on')});go(3);$('dk').textContent='Uninstalled';$('dh').innerHTML='Fair <em>winds.</em>';$('dp').textContent=r.ok?'Drift has been removed. Come back anytime.':'';$('derr').textContent=r.ok?'':r.error;$('dbtn').style.display='none'}
-$('wipe').onclick=e=>e.target.classList.toggle('on');
-/* wind field */
-const cv=$('c'),x=cv.getContext('2d');let W,H;const P=[];function rs(){W=cv.width=cv.clientWidth;H=cv.height=cv.clientHeight}rs();
-for(let i=0;i<170;i++)P.push({x:Math.random()*900,y:Math.random()*580,v:.6+Math.random()*1.6,l:20+Math.random()*60,a:Math.random()});
-let t=0;function frame(){t+=.006;x.clearRect(0,0,W,H);const a=getComputedStyle(document.body).getPropertyValue('--a'),b=getComputedStyle(document.body).getPropertyValue('--b');
- pct+=(target-pct)*.06;$('n').textContent=Math.round(pct);$('bar2').style.width=pct+'%';$('fr').setAttribute('y',420-pct*3.3);$('fr').setAttribute('height',pct*3.3+4);
- burst*=.96;const sp=speed+burst*5;x.lineCap='round';
- for(const p of P){const ang=Math.sin(p.y*.008+t*2)*.35+Math.cos(p.x*.006-t)*.2;const dx=Math.cos(ang)*p.v*sp,dy=Math.sin(ang)*p.v*sp;
-  const g=x.createLinearGradient(p.x-p.l,p.y-dy*p.l/p.v/sp,p.x,p.y);g.addColorStop(0,'transparent');g.addColorStop(1,p.a>.5?a:b);
-  x.strokeStyle=g;x.globalAlpha=.12+p.a*.3+burst*.2;x.lineWidth=1+p.a*1.8;x.beginPath();x.moveTo(p.x-p.l*Math.cos(ang),p.y-p.l*Math.sin(ang));x.lineTo(p.x,p.y);x.stroke();
-  p.x+=dx;p.y+=dy;if(p.x>W+80){p.x=-80;p.y=Math.random()*H}if(p.y<-20||p.y>H+20)p.y=Math.random()*H}
- requestAnimationFrame(frame)}
-(async()=>{const i=await setup.info();st.dir=i.dir;$('dir').textContent=i.dir;$('ver').textContent='v'+i.version;theme();frame();
- if(i.uninstall){document.getElementById('logo').style.right='70px';go(4)}else go(0)})();
-document.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.target.matches('button')){const b=S[cur].querySelector('.btn:not(.ghost)');b&&b.click()}});
-document.querySelectorAll('.pill').forEach(p=>{p.tabIndex=0;p.onkeydown=e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();p.click()}}});
+function mb(b){const m=b/1048576;return m>=1024?(m/1024).toFixed(1)+' GB':Math.max(1,Math.round(m))+' MB'}
+async function uninstall(){$('ubtn').disabled=true;$('ubtn').textContent='Removing…';$('uerr').textContent='';const r=await setup.uninstall({wipe:$('wipe').classList.contains('on')});
+ if(!r.ok){$('ubtn').disabled=false;$('ubtn').textContent='Try again';$('uerr').textContent=r.error;return}
+ go(3);$('dh').textContent='Drift has been removed.';$('dp').textContent=r.keptProfile?'Your browsing data is still in '+r.keptProfile+' if you install Drift again.':'Your browsing data was deleted too.';$('derr').textContent='';$('dbtn').style.display='none'}
+(async()=>{const i=await setup.info();st.dir=i.dir;$('dir').textContent=i.dir;$('ver').textContent='Version '+i.version;theme();
+ if(i.uninstall){go(4);try{const p=await setup.profileSize();$('psize').textContent=p.exists?'Your browsing data: '+mb(p.bytes):'No browsing data found';$('wipe').lastChild.textContent=p.exists?'Also delete my browsing data ('+mb(p.bytes)+')':'Also delete my browsing data'}catch{$('psize').textContent='Browsing data in %APPDATA%\\Drift'}}else go(0)})();
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('xb').disabled)setup.win('close')});
 </script></body></html>

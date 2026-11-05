@@ -13,7 +13,7 @@ const { createStorage } = require('./storage');
 const { spawn } = require('child_process');
 const { createProfileManager, ProfileError } = require('./profiles');
 const { parseIconImages, writeIcoFile } = require('./taskbar-icon');
-const { planDiscards, measurePressure, normalizeTabOptimizationSettings, discardConfigFromSettings } = require('./memory-manager');
+const { planDiscards, planFreezes, measurePressure, normalizeTabOptimizationSettings, discardConfigFromSettings } = require('./memory-manager');
 const { normalizeAppearanceOptions } = require('./appearance-settings');
 const { createRecentlyClosedStore } = require('./recently-closed');
 const { normalizeBookmarkUrl, normalizeFavicon, reorderBookmarkList, moveBookmarkBy } = require('./bookmark-utils');
@@ -57,8 +57,12 @@ for (const [key, sub] of [['sessionData', ''], ['logs', 'Logs'], ['crashDumps', 
 
 // ---------------------------------------------------------------- config
 const IS_WINDOWS = process.platform === 'win32';
-const CHROME_H_WITH_BOOKMARKS = 120; // tab strip (40) + navigation toolbar (42) + bookmarks bar (38)
-const CHROME_H_WITHOUT_BOOKMARKS = 82;
+const CHROME_H_WITH_BOOKMARKS = 118; // tab strip (40) + navigation toolbar (44) + bookmarks bar (34)
+const CHROME_H_WITHOUT_BOOKMARKS = 84;
+// Window background before the chrome paints (matches the Tideline palette, so launch never flashes a foreign colour).
+const WINDOW_BG = { dark: '#0f1e24', light: '#eef3f2' };
+const windowBg = () => (nativeTheme.shouldUseDarkColors ? WINDOW_BG.dark : WINDOW_BG.light);
+const SETTINGS_VERSION = 7;
 const IDLE_DISCARD_MS = 5 * 60 * 1000;
 const NEWTAB = pathToFileURL(path.join(RENDERER_DIR, 'newtab', 'newtab.html')).href;
 const SETTINGS_FILE = 'settings.json';
@@ -207,7 +211,7 @@ let adBlockEnabled = true;
 let popupBlockEnabled = true;
 let allowlistedSites = [];
 let appearance = 'system';
-let colorTheme = 'violet';
+let colorTheme = 'tide';
 let appearanceOptions = normalizeAppearanceOptions();
 let searchEngine = 'duckduckgo';
 // Startup + new-tab preferences.
@@ -291,7 +295,7 @@ const activeTab = () => cur.active;
 
 // ---------------------------------------------------------------- helpers
 const SEARCH_ENGINES = ['duckduckgo', 'google', 'bing', 'brave'];
-const COLOR_THEME_IDS = ['violet', 'ocean', 'forest', 'rose', 'sunset', 'indigo', 'graphite', 'mint'];
+const COLOR_THEME_IDS = ['tide', 'violet', 'ocean', 'forest', 'rose', 'sunset', 'indigo', 'graphite', 'mint'];
 const APPEARANCES = ['system', 'light', 'dark'];
 const STARTUP_MODES = ['newtab', 'previous', 'specific', 'homepage'];
 const NEWTAB_OPEN_MODES = ['newtab', 'homepage', 'blank'];
@@ -364,7 +368,7 @@ function newTabOpenUrl() {
 }
 function applyAppearance() {
   nativeTheme.themeSource = appearance; // makes prefers-color-scheme (chrome, New Tab and websites) follow the choice
-  if (win && !win.isDestroyed()) win.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#11131b' : '#f5f6fa');
+  if (win && !win.isDestroyed()) win.setBackgroundColor(windowBg());
 }
 function applyLoginItem() {
   if (!app.isPackaged || process.platform === 'linux') return;
@@ -581,7 +585,7 @@ function sortedBookmarks() {
   return bookmarksSortedCache;
 }
 function persistBookmarks() { bookmarksSortedCache = null; writeJson('bookmarks.json', bookmarks); }
-function persistSettings() { return writeJson(SETTINGS_FILE, { settingsVersion: 6, adBlockEnabled, popupBlockEnabled, allowlistedSites, appearance, colorTheme, appearanceOptions, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, autoUpdate, usageReports, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins, tabOptimizations }); }
+function persistSettings() { return writeJson(SETTINGS_FILE, { settingsVersion: SETTINGS_VERSION, adBlockEnabled, popupBlockEnabled, allowlistedSites, appearance, colorTheme, appearanceOptions, searchEngine, startupMode, startupPages, homepage, showHomeButton, newTabOpens, newTabShortcuts, newTabClock, windowStart, launchAtLogin, autoUpdate, usageReports, showBookmarksBar, downloadDirectory, askWhereToSave, toolbarPins, tabOptimizations }); }
 
 
 function persistDownloads(immediate = false) {
@@ -910,6 +914,7 @@ function activateTab(tab) {
     return;
   }
   if (!tab.view) safelyLoad(attachView(tab), tab.url || newTabUrl());
+  if (tab.frozen) thawTab(tab);
   tab.url = liveUrl(tab) || tab.url;
   tab.view.setBounds(tabBounds());
   tab.view.setVisible(true);
@@ -926,8 +931,10 @@ function activateTab(tab) {
 // so while it is visible the chrome is raised above the page - without taking keyboard focus.
 // The hover card is ~280 CSS px wide, so a thumbnail needs roughly 2-3x that to stay sharp on
 // HiDPI screens. Keep it generous and encode at high quality (text edges smear at low JPEG quality).
-const THUMB_WIDTH = 720;
-const THUMB_JPEG_QUALITY = 92;
+// 480px is ~1.7x the card's CSS width: sharp on 150% displays at a third of the bytes of the old 720px/q92 capture,
+// and every tab keeps one of these in the main process.
+const THUMB_WIDTH = 480;
+const THUMB_JPEG_QUALITY = 80;
 let cardLifted = false;
 
 function findTabById(id) {
@@ -1024,11 +1031,11 @@ ipcMain.handle('tabs:preview', async (_e, rawId, withThumb = true) => {
   const live = !!tab.view && !tab.view.webContents.isDestroyed();
   const internal = isInternalUrl(tab.url);
   let thumb = tab.thumb || null;
-  if (live && !internal && withThumb) thumb = await captureThumb(tab);
+  if (live && !internal && withThumb && !tab.frozen) thumb = await captureThumb(tab);
   const { memoryKB, sharedWith } = live && !internal ? tabMemory(tab) : { memoryKB: null, sharedWith: 0 };
   return {
     id: tab.id,
-    state: internal ? 'internal' : live ? 'loaded' : 'sleeping',
+    state: internal ? 'internal' : !live ? 'sleeping' : tab.frozen ? 'frozen' : 'loaded',
     thumb,
     memoryKB,
     sharedWith,
@@ -1037,6 +1044,7 @@ ipcMain.handle('tabs:preview', async (_e, rawId, withThumb = true) => {
 });
 
 function destroyView(tab) {
+  tab.frozen = false;
   if (!tab.view) return;
   try { if (winAlive()) win.contentView.removeChildView(tab.view); } catch { /* already detached */ }
   try { const wc = tab.view.webContents; if (wcAlive(wc)) wc.close(); } catch { /* already gone */ }
@@ -1149,10 +1157,37 @@ function isTabOptimizationExcluded(value) {
   return tabOptimizations.excludedHosts.some((rule) => host === rule || host.endsWith(`.${rule}`));
 }
 
+// ---------------------------------------------------------------- tab freezing
+// Tier one of memory relief. A frozen page keeps its DOM, form state and scroll position but runs no script, timers,
+// animation frames or rendering, and Chromium purges its decoded-image and resource caches. Selecting it again
+// thaws it instantly (no reload), which is what makes this cheaper for the user than discarding.
+function lifecycleCommand(tab, state) {
+  const wc = tab.view?.webContents;
+  if (!wcAlive(wc)) return Promise.resolve(false);
+  try {
+    const dbg = wc.debugger;
+    if (!dbg.isAttached()) dbg.attach('1.3');
+    return dbg.sendCommand('Page.setWebLifecycleState', { state }).then(() => true, () => false);
+  } catch { return Promise.resolve(false); } // DevTools or an extension already owns the protocol client
+}
+function freezeTab(tab) {
+  if (tab.frozen || !tab.view) return;
+  tab.frozen = true;
+  lifecycleCommand(tab, 'frozen').then((ok) => {
+    if (!ok) tab.frozen = false;
+    else { try { tab.view?.webContents.debugger.detach(); } catch { /* already detached */ } }
+  });
+}
+function thawTab(tab) {
+  if (!tab.frozen) return;
+  tab.frozen = false;
+  lifecycleCommand(tab, 'active').finally(() => { try { tab.view?.webContents.debugger.detach(); } catch { /* already detached */ } });
+}
+
 // Free memory by discarding background tabs (see memory-manager.js for the policy). A
 // discarded tab keeps its URL, title and favicon and gets a fresh WebContents when selected.
 function discardIdleTabs() {
-  if (quitting || !winAlive() || !tabOptimizations.enabled) return;
+  if (quitting || !winAlive() || (!tabOptimizations.enabled && !tabOptimizations.freezeBackground)) return;
   const live = [];
   for (const s of spaces) {
     for (const t of s.tabs) {
@@ -1165,7 +1200,9 @@ function discardIdleTabs() {
         lastActive: t.lastActive,
         visible: s === cur && t === cur.active,
         audible: wc.isCurrentlyAudible(),
-        busy: downloadOwners.has(wc.id) || (wc.isBeingCaptured?.() ?? false),
+        busy: downloadOwners.has(wc.id) || (wc.isBeingCaptured?.() ?? false) || wc.isDevToolsOpened(),
+        loading: !!t.loading,
+        frozen: !!t.frozen,
         isNewTab: isNewTabUrl(liveUrl(t)),
         excluded: isTabOptimizationExcluded(liveUrl(t) || t.url)
       });
@@ -1175,7 +1212,7 @@ function discardIdleTabs() {
   const pressure = measurePressure({ getSystemMemoryInfo: () => process.getSystemMemoryInfo(), getAppMetrics: () => app.getAppMetrics(), isWindows: IS_WINDOWS });
   for (const entry of live) entry.memoryKB = wcAlive(entry.wc) ? (pressure.byPid.get(entry.wc.getOSProcessId()) || 0) : 0;
   const policyPressure = tabOptimizations.pressureMode === 'off' ? 0 : pressure.level;
-  const doomed = new Set(planDiscards(live, { now: Date.now(), pressure: policyPressure, config: discardConfigFromSettings(tabOptimizations) }));
+  const doomed = new Set(tabOptimizations.enabled ? planDiscards(live, { now: Date.now(), pressure: policyPressure, config: discardConfigFromSettings(tabOptimizations) }) : []);
   let changed = false;
   for (const entry of live) {
     if (!doomed.has(entry.id) || !wcAlive(entry.wc)) continue;
@@ -1184,8 +1221,39 @@ function discardIdleTabs() {
     destroyView(entry.tab);
     changed = true;
   }
+  if (tabOptimizations.freezeBackground) {
+    const freezeable = live.filter((entry) => !doomed.has(entry.id) && wcAlive(entry.wc));
+    const toFreeze = new Set(planFreezes(freezeable, { now: Date.now(), afterMs: tabOptimizations.freezeAfterSeconds * 1000 }));
+    for (const entry of freezeable) if (toFreeze.has(entry.id)) freezeTab(entry.tab);
+  }
   if (changed) { push(); saveSession(); }
 }
+
+// Live memory figures for Settings > Tabs. privateBytes on Windows (what Task Manager calls "Memory"), working set elsewhere.
+function memorySnapshot() {
+  const out = { totalKB: 0, browserKB: 0, tabsKB: 0, tabs: 0, live: 0, frozen: 0, asleep: 0, processes: 0 };
+  let metrics = [];
+  try { metrics = app.getAppMetrics(); } catch { return out; }
+  const byPid = new Map();
+  for (const m of metrics) {
+    const kb = Number(m.memory?.privateBytes ?? m.memory?.workingSetSize) || 0;
+    byPid.set(m.pid, kb); out.totalKB += kb; out.processes += 1;
+  }
+  const tabPids = new Set();
+  for (const s of spaces) {
+    for (const t of s.tabs) {
+      out.tabs += 1;
+      const wc = t.view?.webContents;
+      if (!wcAlive(wc)) { out.asleep += 1; continue; }
+      if (t.frozen) out.frozen += 1; else out.live += 1;
+      try { const pid = wc.getOSProcessId(); if (pid) tabPids.add(pid); } catch { /* process starting */ }
+    }
+  }
+  for (const pid of tabPids) out.tabsKB += byPid.get(pid) || 0;
+  out.browserKB = Math.max(0, out.totalKB - out.tabsKB);
+  return out;
+}
+ipcMain.handle('memory:stats', (event) => (ui && event.sender === ui.webContents ? memorySnapshot() : null));
 
 // ---------------------------------------------------------------- palette
 function openPalette() {
@@ -2067,8 +2135,21 @@ function showSplash(text) {
   if (splash) return;
   try {
     const dark = nativeTheme.shouldUseDarkColors;
-    const html = `<!doctype html><meta charset="utf-8"><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font:14px 'Segoe UI',system-ui,sans-serif;color:${dark ? '#e8eaf2' : '#1c1f2b'};background:${dark ? '#11131b' : '#f5f6fa'};-webkit-app-region:drag;user-select:none"><div style="text-align:center"><div style="font-size:18px;font-weight:600;margin-bottom:6px">Drift</div>${text}</div>`;
-    splash = new BrowserWindow({ width: 340, height: 120, frame: false, resizable: false, maximizable: false, minimizable: false, alwaysOnTop: true, show: false, backgroundColor: dark ? '#11131b' : '#f5f6fa', webPreferences: { sandbox: true, contextIsolation: true } });
+    const bg = dark ? WINDOW_BG.dark : WINDOW_BG.light;
+    const fg = dark ? '#e4efec' : '#0e2a31';
+    const muted = dark ? '#94adab' : '#4d6a6e';
+    const accent = dark ? '#f2c230' : '#8f6200';
+    const safe = String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const html = `<!doctype html><meta charset="utf-8"><style>
+      html,body{margin:0;height:100%;background:${bg};color:${fg};font:13px/1.4 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;-webkit-app-region:drag;user-select:none;overflow:hidden}
+      main{height:100%;display:flex;flex-direction:column;justify-content:center;padding:0 26px;box-sizing:border-box}
+      b{font:700 17px/1.1 "Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;letter-spacing:-.01em}
+      p{margin:6px 0 16px;color:${muted}}
+      i{display:block;height:2px;border-radius:2px;background:linear-gradient(90deg,transparent,${accent},transparent) 0 0/35% 100% no-repeat,${dark ? '#22414b' : '#d3dfde'};animation:r 1.3s ease-in-out infinite}
+      @keyframes r{from{background-position:-40% 0,0 0}to{background-position:140% 0,0 0}}
+      @media (prefers-reduced-motion:reduce){i{animation:none}}
+    </style><main><b>Drift</b><p>${safe}</p><i></i></main>`;
+    splash = new BrowserWindow({ width: 360, height: 128, frame: false, resizable: false, maximizable: false, minimizable: false, alwaysOnTop: true, show: false, backgroundColor: bg, webPreferences: { sandbox: true, contextIsolation: true } });
     splash.once('ready-to-show', () => { if (splash && !splash.isDestroyed()) splash.show(); });
     splash.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
   } catch (error) { splash = null; startupLog(`splash failed: ${error && error.message}`); }
@@ -2086,6 +2167,29 @@ function restartDrift(reason) {
   try { app.releaseSingleInstanceLock(); } catch { /* not held */ }
   app.relaunch();
   app.exit(0);
+}
+
+// Links and files handed to Drift by Windows ("Open with", default-browser clicks, shortcuts) or a second launch.
+const OPENABLE_FILE = /\.(?:html?|xhtml|svg|pdf|txt|json|xml|png|jpe?g|gif|webp)$/i;
+function urlsFromArgv(argv = []) {
+  const out = [];
+  for (const raw of argv.slice(1)) {
+    const arg = String(raw || '').trim();
+    if (!arg || arg.startsWith('-')) continue;
+    if (/^https?:\/\//i.test(arg)) { try { out.push(new URL(arg).href); } catch { /* not a URL */ } continue; }
+    if (/^file:\/\//i.test(arg)) { out.push(arg); continue; }
+    try { if (OPENABLE_FILE.test(arg) && path.isAbsolute(arg) && fs.statSync(arg).isFile()) out.push(pathToFileURL(arg).href); } catch { /* not a file */ }
+  }
+  return out.slice(0, 20);
+}
+function openLaunchUrls(urls) {
+  if (!urls.length || !winAlive()) return;
+  // A just-launched, untouched New Tab is a placeholder: the first link takes its place.
+  const placeholder = cur.tabs.length === 1 && isNewTabUrl(cur.tabs[0].url) ? cur.tabs[0] : null;
+  urls.forEach((url, index) => {
+    if (index === 0 && placeholder) { activateTab(placeholder); go(url); }
+    else createTab(url);
+  });
 }
 
 let discardTimer = null;
@@ -2155,8 +2259,16 @@ async function start() {
   adBlockEnabled = settings.adBlockEnabled !== false;
   popupBlockEnabled = settings.popupBlockEnabled !== false;
   appearance = APPEARANCES.includes(settings.appearance) ? settings.appearance : 'system';
-  colorTheme = COLOR_THEME_IDS.includes(settings.colorTheme) ? settings.colorTheme : 'violet';
+  colorTheme = COLOR_THEME_IDS.includes(settings.colorTheme) ? settings.colorTheme : 'tide';
   appearanceOptions = normalizeAppearanceOptions(settings.appearanceOptions);
+  // 1.4 Tideline: profiles still on the 1.3 out-of-the-box look (violet, system font, aurora New Tab) move to the
+  // new defaults once. Anything the person deliberately chose is left alone, and every old option is still offered.
+  const migrateLook = Number(settings.settingsVersion || 0) < SETTINGS_VERSION;
+  if (migrateLook) {
+    if (colorTheme === 'violet' && !appearanceOptions.accentColor) colorTheme = 'tide';
+    if (appearanceOptions.fontFamily === 'system') appearanceOptions = { ...appearanceOptions, fontFamily: 'drift' };
+    if (appearanceOptions.newTabBackground === 'aurora') appearanceOptions = { ...appearanceOptions, newTabBackground: 'tide' };
+  }
   searchEngine = SEARCH_ENGINES.includes(settings.searchEngine) ? settings.searchEngine : 'duckduckgo';
   // Older builds only had a "Restore previous session" switch.
   // Fresh installs (no saved choice) open a fresh New Tab page. Only an old build that explicitly
@@ -2198,7 +2310,7 @@ async function start() {
   allowlistedSites = Array.isArray(settings.allowlistedSites)
     ? [...new Set(settings.allowlistedSites.filter((x) => typeof x === 'string' && /^[a-z0-9.-]+$/i.test(x)).map((x) => x.toLowerCase()))].slice(-300)
     : [];
-  if (!fs.existsSync(file(SETTINGS_FILE))) persistSettings(); // first run: store the defaults right away
+  if (!fs.existsSync(file(SETTINGS_FILE)) || migrateLook) persistSettings(); // first run / upgrade: store the settings right away
   setupSession();
   // Extensions load in parallel with the window and browser chrome; the first page waits for them below.
   const extensionsReady = extensions.restore().catch((error) => console.warn('Drift could not restore extensions:', error?.message || error));
@@ -2209,7 +2321,7 @@ async function start() {
     ...windowBounds, minWidth: 420, minHeight: 320, title: 'Drift', show: false,
     frame: !IS_WINDOWS, resizable: true, maximizable: true, minimizable: true, closable: true,
     icon: IS_WINDOWS && cachedProfileIconFile() ? cachedProfileIconFile() : BASE_ICON_PNG,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#11131b' : '#f5f6fa'
+    backgroundColor: windowBg()
   });
   // Keep the live window's taskbar identity identical to the AUMID embedded in
   // Drift.lnk by Setup. This lets Windows group the running browser with its pin.
@@ -2228,7 +2340,7 @@ async function start() {
   profileWatch.unref?.(); folderWatch.unref?.();
   win.setMenuBarVisibility(false);
   if (windowBounds.startMaximized) win.maximize();
-  nativeTheme.on('updated', () => { if (win && !win.isDestroyed()) win.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#11131b' : '#f5f6fa'); });
+  nativeTheme.on('updated', () => { if (win && !win.isDestroyed()) win.setBackgroundColor(windowBg()); });
 
   const uiPrefs = { preload: PRELOAD_PATH, contextIsolation: true, sandbox: true };
   ui = new WebContentsView({ webPreferences: uiPrefs });
@@ -2308,16 +2420,17 @@ async function start() {
     cur.active = cur.tabs[0];
   }
 
-  // Content scripts should be registered before the first page loads, but a slow or stuck extension (or Chrome Web Store
-  // setup) must never keep the window hidden: wait a few seconds at most; it keeps loading in the background.
-  await withTimeout(extensionsReady, 3500, 'extensions');
-  startupLog('extensions step done');
+  // Content scripts must be registered before a website loads, but a slow or stuck extension (or Chrome Web Store setup)
+  // must never keep the window hidden. The browser frame appears straight away; only a first tab that is a real
+  // website waits (a few seconds at most) for extensions. The New Tab page and Drift's own pages never wait.
+  const launchUrls = urlsFromArgv(process.argv);
   layout();
-  if (cur.tabs.length) {
-    const initialTab = cur.active || cur.tabs[0];
+  const initialTab = cur.active || cur.tabs[0];
+  const needsExtensions = !!launchUrls.length || (initialTab && !isNewTabUrl(initialTab.url) && !isInternalUrl(initialTab.url));
+  if (!needsExtensions) {
     activateTab(initialTab);
     if (isNewTabUrl(initialTab.url)) focusNewTab(initialTab);
-  } else createTab();
+  }
   revealBrowserWindow();
   closeSplash();
   startupLog('window shown');
@@ -2325,9 +2438,18 @@ async function start() {
   // browser chrome has loaded and the window is visible, can authorize cleanup
   // of the old installation. Setup rolls back any build that cannot confirm it.
   acknowledgeUpdateHealthcheck();
+  if (needsExtensions) {
+    push();
+    await withTimeout(extensionsReady, 3500, 'extensions');
+    if (winAlive()) {
+      if (initialTab && cur.tabs.includes(initialTab)) activateTab(initialTab);
+      openLaunchUrls(launchUrls);
+    }
+  }
+  startupLog('extensions step done');
   // Focus requested before the window was visible can be dropped, so ask again once it is shown.
   if (cur.active && isNewTabUrl(cur.active.url)) setTimeout(() => { if (win && !win.isDestroyed() && !paletteOpen) focusNewTab(cur.active); }, 200);
-  discardTimer = setInterval(discardIdleTabs, 15 * 1000);
+  discardTimer = setInterval(discardIdleTabs, 10 * 1000);
   discardTimer.unref?.();
   updater.onStatus(() => push());
   updater.start(); // background check shortly after startup; installs when Drift closes
@@ -2347,13 +2469,21 @@ process.on('uncaughtException', (error) => {
 
 // Lower baseline memory: switch off Chromium background services a browser this size does not use (translation
 // prompts, Cast discovery, optimization-hint downloads, autofill server calls). Must run before the app is ready.
-app.commandLine.appendSwitch('disable-features', 'Translate,MediaRouter,OptimizationHints,AutofillServerCommunication');
+// Lower baseline memory further:
+//  - SpareRendererForSitePerProcess: Chromium keeps an empty, pre-warmed renderer (~25-40 MB) waiting for the next tab.
+//  - BackForwardCache: keeps whole previous pages alive in memory per tab; Back reloads from the HTTP cache instead.
+//  - Prerender2: speculation rules may render entire pages in the background before you click.
+//  - process-per-site: tabs on the same site share one renderer instead of one renderer each.
+app.commandLine.appendSwitch('disable-features', 'Translate,MediaRouter,OptimizationHints,AutofillServerCommunication,SpareRendererForSitePerProcess,BackForwardCache,Prerender2,InterestFeedContentSuggestions');
+app.commandLine.appendSwitch('process-per-site');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
     startupLog('pinned shortcut / second launch routed to the existing Drift window');
+    const urls = urlsFromArgv(argv);
+    if (winAlive() && startupShown && urls.length) { try { for (const url of urls) createTab(url); } catch { /* window closing */ } }
     if (winAlive() && startupShown) {
       try { if (win.isMinimized()) win.restore(); } catch { /* ignore stale minimize state */ }
       try { if (!win.isVisible()) win.show(); } catch { /* ignore stale visibility state */ }
