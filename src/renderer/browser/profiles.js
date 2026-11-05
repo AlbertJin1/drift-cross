@@ -44,7 +44,7 @@ function syncProfileButton() {
   const avatar = $('profile-avatar');
   pmSetLetter(avatar, p.name);
   btn.style.setProperty('--pc', pmColor(p.color));
-  const nm = $('profile-name'); if (nm) nm.textContent = p.name;
+  const nm = $('profile-btn-name'); if (nm) nm.textContent = p.name;
   avatar.style.setProperty('--pc', pmColor(p.color));
   avatar.style.setProperty('--pi', pmInk(p.color));
   syncTaskbarBadge(p);
@@ -52,34 +52,71 @@ function syncProfileButton() {
   btn.setAttribute('aria-label', `Profile menu. Current profile: ${p.name}`);
 }
 
-// ---- Taskbar badge ---------------------------------------------------------------------
-// Drift's own take on a profile indicator: a rounded-square "chip" in the profile colour with a contrasting ring and the
-// profile's initial, shown on the corner of the Windows taskbar icon (the overlay icon). Drawn here because only the
-// renderer has fonts and a canvas; the main process just applies the PNG. Hidden when there is only the default profile.
-function profileBadgeDataUrl(p) {
-  const S = 64; const canvas = document.createElement('canvas'); canvas.width = canvas.height = S;
-  const g = canvas.getContext('2d');
-  const squircle = (inset, r) => { const a = inset, b = S - inset; g.beginPath(); g.roundRect(a, a, b - a, b - a, r); };
+// ---- Taskbar icon ----------------------------------------------------------------------------------
+// Each profile is its own taskbar app, so its button must say which profile it is. The icon is the Drift icon with a
+// rounded-square "chip" in the profile colour, a contrasting ring and the profile's initial in the corner. Drawn here
+// because only the renderer has fonts and a canvas; the main process packs the PNGs into a .ico and applies it to the
+// window and to the pinned button. If drawing fails, a small overlay badge (the chip alone) is used instead.
+// Nothing is shown while there is only the default profile.
+function drawProfileChip(g, p, S = 64) { // draws the chip on a 64-unit grid scaled to S
+  g.save(); g.scale(S / 64, S / 64);
+  const squircle = (inset, r) => { g.beginPath(); g.roundRect(inset, inset, 64 - inset * 2, 64 - inset * 2, r); };
   const color = pmColor(p.color); const ink = pmInk(p.color);
   squircle(2, 20); g.fillStyle = 'rgba(12,14,22,.92)'; g.fill();          // dark outer edge keeps it visible on any taskbar
   squircle(6, 16); g.fillStyle = '#ffffff'; g.fill();                       // light ring
-  squircle(10, 12);
-  const grad = g.createLinearGradient(10, 10, S - 10, S - 10);
-  grad.addColorStop(0, color); grad.addColorStop(1, color);
-  g.fillStyle = grad; g.fill();
+  squircle(10, 12); g.fillStyle = color; g.fill();
   g.save(); squircle(10, 12); g.clip();                                      // soft highlight across the top, a Drift-style sheen
   const sheen = g.createLinearGradient(0, 10, 0, 34); sheen.addColorStop(0, 'rgba(255,255,255,.35)'); sheen.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = sheen; g.fillRect(10, 10, S - 20, 24); g.restore();
+  g.fillStyle = sheen; g.fillRect(10, 10, 44, 24); g.restore();
   g.fillStyle = ink; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
   g.font = '800 30px "Segoe UI", system-ui, sans-serif';
   const cap = g.measureText('H').actualBoundingBoxAscent; // centre the capital by its real height, not the font's line box
-  g.fillText(pmInitial(p.name), S / 2, S / 2 + cap / 2);
+  g.fillText(pmInitial(p.name), 32, 32 + cap / 2);
+  g.restore();
+}
+function profileBadgeDataUrl(p) { // the chip alone (fallback overlay icon)
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 64;
+  drawProfileChip(canvas.getContext('2d'), p, 64);
   return canvas.toDataURL('image/png');
 }
-function syncTaskbarBadge(p) {
+let pmBaseIcon = null;
+function loadBaseIcon() { // the Drift app icon, handed over by the main process as a data URL (a file:// image would taint the canvas)
+  return pmBaseIcon ||= drift.invoke('profile:icon-base').then((url) => new Promise((resolve, reject) => {
+    if (!url) { reject(new Error('no base icon')); return; }
+    const img = new Image(); img.onload = () => resolve(img); img.onerror = () => reject(new Error('base icon failed to load')); img.src = url;
+  })).catch((error) => { pmBaseIcon = null; throw error; });
+}
+const PM_ICON_SIZES = [256, 48, 32, 24, 16];
+async function profileIconImages(p) {
+  const base = await loadBaseIcon();
+  return PM_ICON_SIZES.map((size) => {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = size;
+    const g = canvas.getContext('2d');
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+    g.drawImage(base, 0, 0, size, size);
+    const chip = Math.round(size * (size <= 24 ? 0.62 : 0.5));      // bigger chip at tiny sizes so the letter stays readable
+    g.save(); g.translate(size - chip, size - chip); drawProfileChip(g, p, chip); g.restore();
+    return { size, dataUrl: canvas.toDataURL('image/png') };
+  });
+}
+let pmIconToken = 0;
+async function syncTaskbarBadge(p) {
   if (!window.drift || drift.platform !== 'win32') return;
+  const token = ++pmIconToken;
   const show = (p.count || 1) > 1 || p.isDefault === false;
-  try { drift.manage('profile:badge', show ? profileBadgeDataUrl(p) : '', show ? `Profile: ${p.name}` : ''); } catch { /* the badge is cosmetic */ }
+  const label = `Profile: ${p.name}`;
+  if (!show) { // only the default profile exists: plain Drift icon
+    try { drift.manage('profile:icon', [], ''); drift.manage('profile:badge', '', ''); } catch { /* cosmetic */ }
+    return;
+  }
+  try {
+    const images = await profileIconImages(p);
+    if (token !== pmIconToken) return; // a newer name/colour arrived while drawing
+    drift.manage('profile:icon', images, label);
+  } catch {
+    if (token !== pmIconToken) return;
+    try { drift.manage('profile:badge', profileBadgeDataUrl(p), label); } catch { /* the badge is cosmetic */ }
+  }
 }
 
 // ---- Data ------------------------------------------------------------------------------

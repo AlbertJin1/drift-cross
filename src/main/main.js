@@ -12,6 +12,7 @@ const { createReviewPrompt } = require('./review-prompt');
 const { createStorage } = require('./storage');
 const { spawn } = require('child_process');
 const { createProfileManager, ProfileError } = require('./profiles');
+const { parseIconImages, writeIcoFile } = require('./taskbar-icon');
 const { planDiscards, measurePressure, normalizeTabOptimizationSettings, discardConfigFromSettings } = require('./memory-manager');
 const { normalizeAppearanceOptions } = require('./appearance-settings');
 const { createRecentlyClosedStore } = require('./recently-closed');
@@ -40,6 +41,9 @@ const LEGACY_USER_DATA_DIRECTORY = app.getPath('userData');
 const APP_DATA_DIRECTORY = path.join(app.getPath('appData'), 'Drift');
 const profiles = createProfileManager({ rootDir: APP_DATA_DIRECTORY });
 const ACTIVE_PROFILE_ID = profiles.resolveActive(process.argv);
+// Make every profile folder carry its profile's current name (AppData\Drift\Profiles\<Name>) before this process
+// starts using its own folder. Profiles that are open in another window are left alone until they close.
+profiles.reconcile();
 const PROFILE_DIRECTORY = profiles.dirFor(ACTIVE_PROFILE_ID);
 const PROFILE_APP_ID = profileAppId(ACTIVE_PROFILE_ID);
 if (process.platform === 'win32') app.setAppUserModelId(PROFILE_APP_ID);
@@ -226,11 +230,20 @@ let askWhereToSave = false;
 let tabOptimizations = normalizeTabOptimizationSettings();
 // The profile this window runs. `count` (how many profiles exist) decides whether the window title names it.
 let profileInfo = { id: ACTIVE_PROFILE_ID, name: 'Default', color: profiles.PROFILE_COLORS[0], isDefault: ACTIVE_PROFILE_ID === profiles.DEFAULT_ID, count: 1 };
+let profileInfoSig = '';
 function refreshProfileInfo() {
   try {
     const p = profiles.get(ACTIVE_PROFILE_ID);
     if (p) profileInfo = { id: p.id, name: p.name, color: p.color, isDefault: p.isDefault, count: profiles.count() };
   } catch (error) { console.warn('Drift could not read its profile list:', error?.message || error); }
+  const sig = JSON.stringify(profileInfo);
+  if (sig === profileInfoSig) return;
+  const first = profileInfoSig === '';
+  profileInfoSig = sig;
+  if (!first) onProfileInfoChanged(); // renamed / recoloured / a profile was added or removed, possibly from another Drift window
+}
+function onProfileInfoChanged() {
+  try { applyTaskbarIdentity(); push(); } catch (error) { startupLog(`profile refresh failed: ${error?.message || error}`); }
 }
 // Silent updater. Uses its own in-memory session, so the ad blocker, cookies and extensions never see its requests.
 let updaterSession = null;
@@ -1475,11 +1488,35 @@ ipcMain.on('cmd', (_e, name, arg) => command(name, arg));
 
 // Settings > About > "Check for updates". The sender is always the browser chrome (checked below).
 const fromChrome = (event) => !!ui && event.sender === ui.webContents;
-// Profile indicator on the taskbar icon (Windows overlay icon). The PNG is drawn by the browser chrome.
-let taskbarBadge = { image: null, label: '' };
+// ---- Taskbar identity (Windows) -------------------------------------------------------------------------------
+// Every profile is its own taskbar app. Its button shows the Drift icon with a badge in the profile's colour and initial
+// (drawn by the browser chrome, which has fonts and a canvas, and packed into <AppData>\Drift\Icons\<id>.ico here so a
+// pinned button looks the same as the running one). The same name feeds the relaunch entry of the jump list.
+// If the chrome cannot draw the icon, a small overlay badge is used instead.
+const BASE_ICON_ICO = path.join(ROOT_DIR, 'build', 'icon.ico');
+const BASE_ICON_PNG = path.join(ROOT_DIR, 'build', 'icon.png');
+let taskbarBadge = { image: null, label: '' };            // fallback overlay
+let taskbarIcon = { file: '', image: null };              // generated per-profile icon
+const cachedProfileIconFile = () => { try { const f = profiles.iconFile(ACTIVE_PROFILE_ID); return fs.existsSync(f) ? f : ''; } catch { return ''; } };
 function applyTaskbarBadge() {
   if (process.platform !== 'win32' || !winAlive() || typeof win.setOverlayIcon !== 'function') return;
   try { win.setOverlayIcon(taskbarBadge.image, taskbarBadge.label); } catch (error) { startupLog(`taskbar badge unavailable: ${error?.message || error}`); }
+}
+function applyTaskbarIdentity() {
+  if (!IS_WINDOWS || !winAlive()) return;
+  const iconFile = taskbarIcon.file || BASE_ICON_ICO;
+  try {
+    win.setAppDetails?.({
+      appId: PROFILE_APP_ID,
+      appIconPath: iconFile,
+      appIconIndex: 0,
+      // Pinning this window's taskbar button relaunches this same profile.
+      relaunchCommand: [process.execPath, ...(app.isPackaged ? [] : [app.getAppPath()]), `--profile=${ACTIVE_PROFILE_ID}`].map((a) => `"${a}"`).join(' '),
+      relaunchDisplayName: ACTIVE_PROFILE_ID === 'default' ? 'Drift' : `Drift - ${profileInfo.name}`
+    });
+  } catch (error) { startupLog(`taskbar app details unavailable: ${error?.message || error}`); }
+  try { if (typeof win.setIcon === 'function') win.setIcon(taskbarIcon.image || nativeImage.createFromPath(BASE_ICON_PNG)); } catch (error) { startupLog(`window icon unavailable: ${error?.message || error}`); }
+  applyTaskbarBadge(); // after setAppDetails, which would otherwise reset it
 }
 ipcMain.on('profile:badge', (event, dataUrl, label) => {
   if (!fromChrome(event)) return;
@@ -1491,6 +1528,30 @@ ipcMain.on('profile:badge', (event, dataUrl, label) => {
     taskbarBadge = { image, label: String(label || 'Profile').slice(0, 80) };
   } else return;
   applyTaskbarBadge();
+});
+// The chrome sends the badged icon at several sizes (or an empty list when this profile should show the plain Drift icon).
+ipcMain.on('profile:icon', (event, images, label) => {
+  if (!fromChrome(event) || process.platform !== 'win32') return;
+  try {
+    const target = profiles.iconFile(ACTIVE_PROFILE_ID);
+    if (!Array.isArray(images) || images.length === 0) {
+      taskbarIcon = { file: '', image: null };
+      try { fs.rmSync(target, { force: true }); } catch { /* the file is only a cache */ }
+    } else {
+      const parsed = parseIconImages(images);
+      if (!parsed) return;
+      writeIcoFile(target, parsed);
+      const largest = parsed[parsed.length - 1];
+      const image = nativeImage.createFromBuffer(largest.png);
+      taskbarIcon = { file: target, image: image.isEmpty() ? null : image };
+    }
+    taskbarBadge = { image: null, label: '' }; // the icon itself carries the badge now
+    applyTaskbarIdentity();
+  } catch (error) { startupLog(`profile icon not applied: ${error?.message || error}`); }
+});
+ipcMain.handle('profile:icon-base', (event) => {
+  if (!fromChrome(event)) return '';
+  try { const image = nativeImage.createFromPath(BASE_ICON_PNG); return image.isEmpty() ? '' : image.resize({ width: 256, height: 256, quality: 'best' }).toDataURL(); } catch { return ''; }
 });
 ipcMain.handle('updates:check', async (event) => {
   if (!fromChrome(event)) return updater.getStatus();
@@ -1556,7 +1617,7 @@ ipcMain.handle('profiles:update', (event, id, input) => {
     const patch = {};
     if (typeof input?.name === 'string') patch.name = input.name;
     if (typeof input?.color === 'string') patch.color = input.color;
-    const profile = profiles.update(String(id || ''), patch);
+    const profile = profiles.update(String(id || ''), patch, { activeId: ACTIVE_PROFILE_ID });
     refreshProfileInfo(); push();
     return { ok: true, profile, ...profileList() };
   } catch (error) { return profileFailure(error); }
@@ -2147,26 +2208,24 @@ async function start() {
   win = new BaseWindow({
     ...windowBounds, minWidth: 420, minHeight: 320, title: 'Drift', show: false,
     frame: !IS_WINDOWS, resizable: true, maximizable: true, minimizable: true, closable: true,
-    icon: path.join(ROOT_DIR, 'build', 'icon.png'),
+    icon: IS_WINDOWS && cachedProfileIconFile() ? cachedProfileIconFile() : BASE_ICON_PNG,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#11131b' : '#f5f6fa'
   });
   // Keep the live window's taskbar identity identical to the AUMID embedded in
   // Drift.lnk by Setup. This lets Windows group the running browser with its pin.
   if (IS_WINDOWS) {
     try { app.setAppUserModelId(PROFILE_APP_ID); } catch { /* older Windows shell */ }
-    try {
-      win.setAppDetails?.({
-        appId: PROFILE_APP_ID,
-        appIconPath: path.join(ROOT_DIR, 'build', 'icon.ico'),
-        appIconIndex: 0,
-        // Pinning this window's taskbar button relaunches this same profile.
-        relaunchCommand: [process.execPath, ...(app.isPackaged ? [] : [app.getAppPath()]), `--profile=${ACTIVE_PROFILE_ID}`].map((a) => `"${a}"`).join(' '),
-        relaunchDisplayName: ACTIVE_PROFILE_ID === 'default' ? 'Drift' : `Drift - ${profileInfo.name}`
-      });
-    } catch (error) { startupLog(`taskbar app details unavailable: ${error?.message || error}`); }
-    applyTaskbarBadge(); // after setAppDetails, which would otherwise reset it
+    const cached = cachedProfileIconFile();
+    if (cached) { try { const image = nativeImage.createFromPath(cached); if (!image.isEmpty()) taskbarIcon = { file: cached, image }; } catch { /* the chrome redraws it right away */ } }
+    applyTaskbarIdentity();
     try { win.on('show', applyTaskbarBadge); } catch { /* optional */ }
   }
+  // Drift runs one process per open profile, all sharing profiles.json. Look for changes made from another window (a
+  // rename, a new colour, a profile added or removed) so this window's title, badge and taskbar icon stay accurate, and
+  // finish renaming folders whose profile was open when it was renamed.
+  const profileWatch = setInterval(() => { if (!quitting) refreshProfileInfo(); }, 2500);
+  const folderWatch = setInterval(() => { if (!quitting) profiles.reconcile({ selfId: ACTIVE_PROFILE_ID }); }, 15000);
+  profileWatch.unref?.(); folderWatch.unref?.();
   win.setMenuBarVisibility(false);
   if (windowBounds.startMaximized) win.maximize();
   nativeTheme.on('updated', () => { if (win && !win.isDestroyed()) win.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#11131b' : '#f5f6fa'); });

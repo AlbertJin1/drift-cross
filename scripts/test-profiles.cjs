@@ -7,7 +7,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createProfileManager, ProfileError, PROFILE_COLORS, cleanName, isValidId } = require('../src/main/profiles.js');
+const { createProfileManager, ProfileError, PROFILE_COLORS, INFO_FILE, cleanName, folderSafeName, isValidId } = require('../src/main/profiles.js');
+const { parseIconImages, buildIco } = require('../src/main/taskbar-icon.js');
 
 const results = [];
 const silent = { warn() {}, error() {} };
@@ -38,7 +39,7 @@ const writeRun = (dir, state) => { fs.mkdirSync(dir, { recursive: true }); fs.wr
     assert.match(p.id, /^[a-f0-9]{12}$/);
     assert.equal(p.name, 'Work');
     assert.equal(p.color, PROFILE_COLORS[1]);
-    assert.equal(m.dirFor(p.id), path.join(root, 'Profiles', p.id));
+    assert.equal(m.dirFor(p.id), path.join(root, 'Profiles', 'Work')); // the folder carries the name the user typed
     assert.ok(fs.statSync(m.dirFor(p.id)).isDirectory());
     // A second manager (another Drift process) sees the same registry.
     const other = createProfileManager({ rootDir: root, pid: 2000, log: silent });
@@ -178,7 +179,7 @@ const writeRun = (dir, state) => { fs.mkdirSync(dir, { recursive: true }); fs.wr
     fs.writeFileSync(path.join(root, 'Profiles', '.deleting-abc-1', 'x'), '1');
     const keep = m.create({ name: 'Keep' });
     assert.equal(m.sweep(), 1);
-    assert.deepEqual(fs.readdirSync(path.join(root, 'Profiles')), [keep.id]);
+    assert.deepEqual(fs.readdirSync(path.join(root, 'Profiles')), ['Keep']);
   });
 
   await test('concurrent managers do not lose each other’s profiles (read-modify-write from disk)', (m, root) => {
@@ -187,6 +188,127 @@ const writeRun = (dir, state) => { fs.mkdirSync(dir, { recursive: true }); fs.wr
     other.create({ name: 'From B' });
     m.create({ name: 'From A2' });
     assert.deepEqual(other.list().map((x) => x.name), ['Default', 'From A', 'From B', 'From A2']);
+  });
+
+
+  await test('the AppData folder is named after the profile and holds a marker saying which profile it is', (m, root) => {
+    const p = m.create({ name: 'Work' });
+    assert.deepEqual(fs.readdirSync(path.join(root, 'Profiles')), ['Work']);
+    const info = JSON.parse(fs.readFileSync(path.join(m.dirFor(p.id), INFO_FILE), 'utf8'));
+    assert.deepEqual(info, { app: 'Drift', id: p.id, name: 'Work', color: p.color });
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'profiles.json'), 'utf8')).profiles[1].dir, 'Work');
+  });
+
+  await test('renaming a profile renames its folder, keeps its data and updates the marker', (m, root) => {
+    const p = m.create({ name: 'Old' });
+    fs.writeFileSync(path.join(m.dirFor(p.id), 'bookmarks.json'), '[1]');
+    m.update(p.id, { name: 'School' });
+    assert.deepEqual(fs.readdirSync(path.join(root, 'Profiles')), ['School']);
+    assert.equal(m.dirFor(p.id), path.join(root, 'Profiles', 'School'));
+    assert.equal(fs.readFileSync(path.join(m.dirFor(p.id), 'bookmarks.json'), 'utf8'), '[1]');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(m.dirFor(p.id), INFO_FILE), 'utf8')).name, 'School');
+    // A colour-only change must not touch the folder name but must refresh the marker.
+    m.update(p.id, { color: PROFILE_COLORS[3] });
+    assert.equal(m.dirFor(p.id), path.join(root, 'Profiles', 'School'));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(m.dirFor(p.id), INFO_FILE), 'utf8')).color, PROFILE_COLORS[3]);
+  });
+
+  await test('a case-only rename ("work" -> "Work") is applied to the folder too', (m, root) => {
+    const p = m.create({ name: 'work' });
+    m.update(p.id, { name: 'Work' });
+    assert.deepEqual(fs.readdirSync(path.join(root, 'Profiles')), ['Work']);
+  });
+
+  await test('the folder of an open profile is never moved; its marker updates now and the folder follows once it closes', (m, root, alive) => {
+    const p = m.create({ name: 'Live' });
+    writeRun(m.dirFor(p.id), { running: true, pid: 4242 });
+    alive.add(4242);
+    m.update(p.id, { name: 'Renamed' });                       // renamed from another window while it is open
+    assert.equal(m.get(p.id).name, 'Renamed');
+    assert.equal(m.dirFor(p.id), path.join(root, 'Profiles', 'Live'), 'folder stays put while in use');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(m.dirFor(p.id), INFO_FILE), 'utf8')).name, 'Renamed');
+    assert.equal(m.reconcile(), 0);
+    // the profile's own process must also never move itself, even if its run-state were missing
+    fs.rmSync(path.join(m.dirFor(p.id), 'run-state.json'));
+    assert.equal(m.reconcile({ selfId: p.id }), 0);
+    assert.equal(m.dirFor(p.id), path.join(root, 'Profiles', 'Live'));
+    writeRun(m.dirFor(p.id), { running: false, pid: 4242 });  // window closed
+    assert.equal(m.reconcile(), 1);
+    assert.deepEqual(fs.readdirSync(path.join(root, 'Profiles')), ['Renamed']);
+    assert.equal(m.dirFor(p.id), path.join(root, 'Profiles', 'Renamed'));
+  });
+
+  await test('profiles from older builds (folder named by id) move to a name-based folder at the next start', (m, root) => {
+    const id = 'abcdef012345';
+    fs.mkdirSync(path.join(root, 'Profiles', id), { recursive: true });
+    fs.writeFileSync(path.join(root, 'Profiles', id, 'history.json'), '[]');
+    fs.writeFileSync(path.join(root, 'profiles.json'), JSON.stringify({ version: 1, lastUsed: 'default', profiles: [{ id: 'default', name: 'Default' }, { id, name: 'Legacy', color: PROFILE_COLORS[2], createdAt: 1 }] }));
+    assert.equal(m.dirFor(id), path.join(root, 'Profiles', id), 'works unchanged before the migration');
+    assert.equal(m.reconcile(), 1);
+    assert.equal(m.dirFor(id), path.join(root, 'Profiles', 'Legacy'));
+    assert.ok(fs.existsSync(path.join(root, 'Profiles', 'Legacy', 'history.json')));
+    assert.equal(fs.existsSync(path.join(root, 'Profiles', id)), false);
+  });
+
+  await test('folder names are safe on every OS and unique even when two names clean up the same', (m, root) => {
+    assert.equal(folderSafeName('a/b\\c:d*e?f"g<h>i|j'), 'abcdefghij');
+    assert.equal(folderSafeName('..hidden. '), 'hidden');
+    assert.equal(folderSafeName('CON'), 'CON profile');
+    assert.equal(folderSafeName('nul.txt'), 'nul.txt profile');
+    assert.equal(folderSafeName('///'), 'Profile');
+    assert.equal(folderSafeName('日本語 プロフィール'), '日本語 プロフィール');
+    const a = m.create({ name: 'a/b' }); const b = m.create({ name: 'ab' }); const c = m.create({ name: 'A:B' });
+    assert.deepEqual([m.dirFor(a.id), m.dirFor(b.id), m.dirFor(c.id)].map((d) => path.basename(d)), ['ab', 'ab (2)', 'AB (3)']);
+    fs.mkdirSync(path.join(root, 'Profiles', 'Stray'));                     // a leftover folder is never reused
+    assert.equal(path.basename(m.dirFor(m.create({ name: 'Stray' }).id)), 'Stray (2)');
+  });
+
+  await test('a tampered folder name in the registry can never point outside Profiles/', (m, root) => {
+    const p = m.create({ name: 'Real' });
+    for (const dir of ['../../evil', '..', '.hidden', 'a/b', 'a\\b', 'C:\\x', '', 'CON', 'x.']) {
+      fs.writeFileSync(path.join(root, 'profiles.json'), JSON.stringify({ profiles: [{ id: 'default', name: 'Default' }, { id: p.id, name: 'Real', dir }] }));
+      assert.equal(m.dirFor(p.id), path.join(root, 'Profiles', p.id), `dir ${JSON.stringify(dir)}`);
+    }
+  });
+
+  await test('removing a profile deletes the renamed folder and its generated taskbar icon', (m, root) => {
+    const p = m.create({ name: 'Gone' });
+    fs.mkdirSync(path.dirname(m.iconFile(p.id)), { recursive: true });
+    fs.writeFileSync(m.iconFile(p.id), 'ico');
+    fs.writeFileSync(m.iconFile('0123456789ab'), 'orphan');
+    m.remove(p.id, { activeId: 'default' });
+    assert.equal(fs.existsSync(m.iconFile(p.id)), false);
+    assert.deepEqual(fs.readdirSync(path.join(root, 'Profiles')), []);
+    m.sweep();
+    assert.equal(fs.existsSync(m.iconFile('0123456789ab')), false, 'orphan icons are swept');
+  });
+
+  await test('taskbar icon: PNGs are packed into a valid .ico and anything else is rejected', () => {
+    const png = (size, extra = 40) => {
+      const b = Buffer.alloc(33 + extra);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+      b.writeUInt32BE(13, 8); b.write('IHDR', 12); b.writeUInt32BE(size, 16); b.writeUInt32BE(size, 20);
+      return `data:image/png;base64,${b.toString('base64')}`;
+    };
+    const parsed = parseIconImages([{ size: 256, dataUrl: png(256) }, { size: 16, dataUrl: png(16) }, { size: 32, dataUrl: png(32) }]);
+    assert.deepEqual(parsed.map((x) => x.size), [16, 32, 256]);
+    const ico = buildIco(parsed);
+    assert.equal(ico.readUInt16LE(2), 1); assert.equal(ico.readUInt16LE(4), 3);
+    assert.equal(ico.readUInt8(6), 16); assert.equal(ico.readUInt8(6 + 32), 0, '256px is stored as 0');
+    for (let i = 0; i < 3; i++) { // every entry points at its own PNG
+      const len = ico.readUInt32LE(6 + 16 * i + 8); const off = ico.readUInt32LE(6 + 16 * i + 12);
+      assert.equal(ico.subarray(off, off + 8).equals(parsed[i].png.subarray(0, 8)), true);
+      assert.equal(ico.readUInt32BE(off + 16), parsed[i].size);
+      assert.equal(len, parsed[i].png.length);
+    }
+    assert.equal(ico.length, 6 + 48 + parsed.reduce((n, x) => n + x.png.length, 0));
+    assert.equal(parseIconImages([]), null);
+    assert.equal(parseIconImages('x'), null);
+    assert.equal(parseIconImages([{ size: 32, dataUrl: png(48) }]), null, 'stated size must match the PNG');
+    assert.equal(parseIconImages([{ size: 32, dataUrl: 'data:image/png;base64,AAAA' }]), null);
+    assert.equal(parseIconImages([{ size: 32, dataUrl: `data:text/html;base64,${Buffer.from('<script>').toString('base64')}` }]), null);
+    assert.equal(parseIconImages([{ size: 32, dataUrl: png(32) }, { size: 32, dataUrl: png(32) }]), null, 'duplicate sizes');
+    assert.equal(parseIconImages([{ size: 512, dataUrl: png(256) }]), null);
   });
 
   let failed = 0;
