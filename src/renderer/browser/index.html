@@ -50,7 +50,7 @@
       <button id="find-btn" class="icon" title="Find in page (Ctrl+F)" aria-label="Find in page"><svg data-fa="search"></svg></button>
       <button id="reader" class="icon" title="Reader mode (Ctrl+Shift+R)" aria-label="Reader mode"><svg data-fa="book"></svg></button>
       <button id="palette" class="icon" title="Command palette (Ctrl+K)" aria-label="Open command palette"><svg data-fa="terminal"></svg></button>
-      <button id="profile-btn" class="icon profile-btn" title="Profile" aria-label="Profile menu" aria-haspopup="menu" aria-expanded="false"><span id="profile-avatar" class="profile-avatar" aria-hidden="true">D</span></button>
+      <button id="profile-btn" class="profile-btn" title="Profile" aria-label="Profile menu" aria-haspopup="menu" aria-expanded="false"><span id="profile-avatar" class="profile-avatar" aria-hidden="true"><b>D</b></span><span id="profile-name" class="profile-btn-name" aria-hidden="true">Default</span><svg data-fa="down" class="profile-btn-chev"></svg></button>
       <button id="toolbar-overflow" class="icon" title="Menu" aria-label="Open menu" aria-haspopup="menu"><svg data-fa="more"></svg></button>
       <button id="settings" class="icon settings-button" title="Settings (Ctrl+,)" aria-label="Open settings"><svg data-fa="gear"></svg></button>
     </header>
@@ -198,7 +198,7 @@
     <form id="profile-form" class="dialog-panel profile-panel" autocomplete="off" novalidate>
       <div class="dialog-heading flex items-center justify-between gap-3"><div><h2 id="profile-dialog-title">Add profile</h2><p id="profile-dialog-sub"></p></div><button type="button" class="icon dialog-close" data-close="profileDialog" title="Close" aria-label="Close"><svg data-fa="close"></svg></button></div>
       <div class="profile-dialog-body">
-        <div class="profile-dialog-top"><span id="profile-preview" class="profile-avatar xl" aria-hidden="true">?</span>
+        <div class="profile-dialog-top"><span id="profile-preview" class="profile-avatar xl" aria-hidden="true"><b>?</b></span>
           <label class="profile-name-field" for="profile-name"><span>Name</span><input id="profile-name" class="page-input" type="text" maxlength="40" placeholder="Work, Personal, School…" spellcheck="false" autocomplete="off"></label>
         </div>
         <div class="profile-color-block"><span class="profile-color-label" id="profile-color-label">Color</span><div id="profile-colors" class="profile-colors" role="radiogroup" aria-labelledby="profile-color-label"></div></div>

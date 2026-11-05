@@ -6,7 +6,7 @@ const MANAGE_CHANNELS = [
   'bookmark:update', 'bookmark:remove', 'bookmark:add', 'bookmark:reorder', 'bookmark:move',
   'history:remove', 'history:clear',
   'adblock:toggle', 'popup-block:toggle', 'adblock:toggle-site', 'adblock:reset-count', 'settings:update',
-  'downloads:action', 'find:query', 'find:next', 'find:close', 'extension:confirm-response'
+  'downloads:action', 'find:query', 'find:next', 'find:close', 'extension:confirm-response', 'profile:badge'
 ];
 const INVOKE_CHANNELS = ['downloads:choose-folder', 'downloads:clear', 'extensions:install', 'extensions:install-store', 'extensions:remove', 'data:clear', 'menu:data', 'tabs:preview', 'reviews:submit', 'reviews:maybe-prompt', 'reviews:prompt-shown', 'reviews:defer', 'updates:check', 'updates:install', 'profiles:list', 'profiles:create', 'profiles:update', 'profiles:remove', 'profiles:open'];
 

@@ -33,7 +33,7 @@ function dmRowButton({ icon, label, hint = '', kbd = '', sub = '', act = '', bad
     <span class="dm-text"><span class="dm-label">${dmEsc(label)}</span>${hint ? `<small>${dmEsc(hint)}</small>` : ''}</span>
     ${badge ? `<span class="dm-badge">${dmEsc(badge)}</span>` : ''}
     ${kbd ? `<kbd>${dmEsc(kbd)}</kbd>` : ''}
-    ${sub ? `<span class="dm-chev">${dmIcon('arrowRight')}</span>` : ''}
+    ${sub ? `<span class="dm-chev">${dmIcon('chevronRight')}</span>` : ''}
   </button>`;
 }
 const dmSep = () => '<div class="dm-sep" role="separator"></div>';

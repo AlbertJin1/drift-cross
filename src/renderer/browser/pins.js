@@ -27,8 +27,8 @@ const PIN_DEFS = {
   settings: { label: 'Settings', icon: 'gear', run: () => drift.cmd('settings') }
 };
 const PIN_IDS = Object.keys(PIN_DEFS);
-const PIN_GRIP = '<svg class="pin-grip-svg" viewBox="0 0 10 16" aria-hidden="true"><circle cx="3" cy="3" r="1.3"/><circle cx="7" cy="3" r="1.3"/><circle cx="3" cy="8" r="1.3"/><circle cx="7" cy="8" r="1.3"/><circle cx="3" cy="13" r="1.3"/><circle cx="7" cy="13" r="1.3"/></svg>';
-const PIN_SVG = '<svg class="pin-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.6 1.4a1 1 0 0 1 1.4 0l3.6 3.6a1 1 0 0 1 0 1.4l-.7.7a1 1 0 0 1-1.2.16l-1.7-.9-2.4 2.4c.4 1.3.2 2.7-.8 3.7l-.5.5-2.6-2.6-3.4 3.4a.8.8 0 1 1-1.1-1.1l3.4-3.4L2.9 7.5l.5-.5c1-1 2.4-1.2 3.7-.8l2.4-2.4-.9-1.7a1 1 0 0 1 .16-1.2z"/></svg>';
+const PIN_GRIP = window.fa('grip', 'pin-grip-svg');
+const PIN_SVG = window.fa('pin', 'pin-svg');
 
 const pinBox = document.createElement('div');
 pinBox.id = 'toolbar-pins';

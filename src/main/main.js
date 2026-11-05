@@ -1,4 +1,4 @@
-const { app, BaseWindow, BrowserWindow, WebContentsView, Menu, ipcMain, session, nativeTheme, dialog, shell, clipboard, screen, powerMonitor } = require('electron');
+const { app, BaseWindow, BrowserWindow, WebContentsView, Menu, ipcMain, session, nativeTheme, nativeImage, dialog, shell, clipboard, screen, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
@@ -29,7 +29,9 @@ const PAGE_PRELOAD_PATH = path.join(__dirname, '..', 'preload', 'page-preload.js
 // application binaries are installed separately by the per-user installer.
 const APP_USER_MODEL_ID = 'org.drift.browser';
 app.setName('Drift');
-if (process.platform === 'win32') app.setAppUserModelId(APP_USER_MODEL_ID);
+// Each profile is its own taskbar app (own button, own pin, no grouping with other profiles). The default profile keeps the
+// original id so existing shortcuts, pins and notifications keep working.
+const profileAppId = (id) => (id === 'default' ? APP_USER_MODEL_ID : `${APP_USER_MODEL_ID}.${id}`);
 const LEGACY_USER_DATA_DIRECTORY = app.getPath('userData');
 // APP_DATA_DIRECTORY is the folder shared by every profile (profile registry, update files, startup log).
 // Each browser profile gets its own userData folder, which is what keeps cookies, logins, site storage,
@@ -39,8 +41,15 @@ const APP_DATA_DIRECTORY = path.join(app.getPath('appData'), 'Drift');
 const profiles = createProfileManager({ rootDir: APP_DATA_DIRECTORY });
 const ACTIVE_PROFILE_ID = profiles.resolveActive(process.argv);
 const PROFILE_DIRECTORY = profiles.dirFor(ACTIVE_PROFILE_ID);
+const PROFILE_APP_ID = profileAppId(ACTIVE_PROFILE_ID);
+if (process.platform === 'win32') app.setAppUserModelId(PROFILE_APP_ID);
 try { fs.mkdirSync(PROFILE_DIRECTORY, { recursive: true }); } catch { /* reported when the first file is written */ }
 app.setPath('userData', PROFILE_DIRECTORY);
+// Pin every Chromium data location to this profile's folder so cookies, site storage, cache, logs and crash dumps
+// can never leak between profiles, even if Electron's default for one of them is derived from somewhere else.
+for (const [key, sub] of [['sessionData', ''], ['logs', 'Logs'], ['crashDumps', 'Crashpad']]) {
+  try { app.setPath(key, sub ? path.join(PROFILE_DIRECTORY, sub) : PROFILE_DIRECTORY); } catch { /* key not supported on this Electron */ }
+}
 
 // ---------------------------------------------------------------- config
 const IS_WINDOWS = process.platform === 'win32';
@@ -516,7 +525,7 @@ function push() {
     try {
     if (ui && wcAlive(ui.webContents)) ui.webContents.send('state', snapshot());
     const t = activeTab();
-    const title = (t?.title || 'New tab') + ' — Drift Browser' + (profileInfo.count > 1 ? ` — ${profileInfo.name}` : '');
+    const title = (t?.title || 'New tab') + ' — Drift Browser' + (profileInfo.count > 1 || !profileInfo.isDefault ? ` — ${profileInfo.name}` : '');
     if (win && !win.isDestroyed() && title !== lastWindowTitle) {
       lastWindowTitle = title;
       win.setTitle(title);
@@ -1466,6 +1475,23 @@ ipcMain.on('cmd', (_e, name, arg) => command(name, arg));
 
 // Settings > About > "Check for updates". The sender is always the browser chrome (checked below).
 const fromChrome = (event) => !!ui && event.sender === ui.webContents;
+// Profile indicator on the taskbar icon (Windows overlay icon). The PNG is drawn by the browser chrome.
+let taskbarBadge = { image: null, label: '' };
+function applyTaskbarBadge() {
+  if (process.platform !== 'win32' || !winAlive() || typeof win.setOverlayIcon !== 'function') return;
+  try { win.setOverlayIcon(taskbarBadge.image, taskbarBadge.label); } catch (error) { startupLog(`taskbar badge unavailable: ${error?.message || error}`); }
+}
+ipcMain.on('profile:badge', (event, dataUrl, label) => {
+  if (!fromChrome(event)) return;
+  const text = typeof dataUrl === 'string' ? dataUrl : '';
+  if (!text) taskbarBadge = { image: null, label: '' };
+  else if (/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(text) && text.length < 150000) {
+    const image = nativeImage.createFromDataURL(text);
+    if (image.isEmpty()) return;
+    taskbarBadge = { image, label: String(label || 'Profile').slice(0, 80) };
+  } else return;
+  applyTaskbarBadge();
+});
 ipcMain.handle('updates:check', async (event) => {
   if (!fromChrome(event)) return updater.getStatus();
   await updater.checkNow();
@@ -2127,16 +2153,19 @@ async function start() {
   // Keep the live window's taskbar identity identical to the AUMID embedded in
   // Drift.lnk by Setup. This lets Windows group the running browser with its pin.
   if (IS_WINDOWS) {
-    try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* older Windows shell */ }
+    try { app.setAppUserModelId(PROFILE_APP_ID); } catch { /* older Windows shell */ }
     try {
       win.setAppDetails?.({
-        appId: APP_USER_MODEL_ID,
+        appId: PROFILE_APP_ID,
         appIconPath: path.join(ROOT_DIR, 'build', 'icon.ico'),
         appIconIndex: 0,
-        relaunchCommand: process.execPath,
-        relaunchDisplayName: 'Drift'
+        // Pinning this window's taskbar button relaunches this same profile.
+        relaunchCommand: [process.execPath, ...(app.isPackaged ? [] : [app.getAppPath()]), `--profile=${ACTIVE_PROFILE_ID}`].map((a) => `"${a}"`).join(' '),
+        relaunchDisplayName: ACTIVE_PROFILE_ID === 'default' ? 'Drift' : `Drift - ${profileInfo.name}`
       });
     } catch (error) { startupLog(`taskbar app details unavailable: ${error?.message || error}`); }
+    applyTaskbarBadge(); // after setAppDetails, which would otherwise reset it
+    try { win.on('show', applyTaskbarBadge); } catch { /* optional */ }
   }
   win.setMenuBarVisibility(false);
   if (windowBounds.startMaximized) win.maximize();

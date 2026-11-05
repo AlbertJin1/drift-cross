@@ -26,8 +26,10 @@ function pmInk(color) { // readable letter colour on top of the avatar colour
   const n = parseInt(pmColor(color).slice(1), 16);
   return (0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255)) > 165 ? '#14161f' : '#ffffff';
 }
+// The letter lives in its own <b> so CSS can trim the font's built-in ascent/descent and centre the capital exactly.
+function pmSetLetter(el, name) { el.innerHTML = `<b>${escapeHtml(pmInitial(name))}</b>`; }
 function pmAvatar(profile, size = '') {
-  return `<span class="profile-avatar ${size}" style="--pc:${pmColor(profile.color)};--pi:${pmInk(profile.color)}" aria-hidden="true">${escapeHtml(pmInitial(profile.name))}</span>`;
+  return `<span class="profile-avatar ${size}" style="--pc:${pmColor(profile.color)};--pi:${pmInk(profile.color)}" aria-hidden="true"><b>${escapeHtml(pmInitial(profile.name))}</b></span>`;
 }
 const pmIcon = (name) => (window.fa ? window.fa(name) : '');
 const pmCurrent = () => state.profile || { id: '', name: 'Default', color: PM_DEFAULT_COLORS[0], count: 1 };
@@ -36,15 +38,48 @@ const pmCurrent = () => state.profile || { id: '', name: 'Default', color: PM_DE
 function syncProfileButton() {
   const p = state.profile; const btn = $('profile-btn');
   if (!btn || !p) return;
-  const sig = `${p.name}|${p.color}`;
+  const sig = `${p.name}|${p.color}|${p.count}|${p.isDefault}`;
   if (btn._sig === sig) return;
   btn._sig = sig;
   const avatar = $('profile-avatar');
-  avatar.textContent = pmInitial(p.name);
+  pmSetLetter(avatar, p.name);
+  btn.style.setProperty('--pc', pmColor(p.color));
+  const nm = $('profile-name'); if (nm) nm.textContent = p.name;
   avatar.style.setProperty('--pc', pmColor(p.color));
   avatar.style.setProperty('--pi', pmInk(p.color));
+  syncTaskbarBadge(p);
   btn.title = `Profile: ${p.name}`;
   btn.setAttribute('aria-label', `Profile menu. Current profile: ${p.name}`);
+}
+
+// ---- Taskbar badge ---------------------------------------------------------------------
+// Drift's own take on a profile indicator: a rounded-square "chip" in the profile colour with a contrasting ring and the
+// profile's initial, shown on the corner of the Windows taskbar icon (the overlay icon). Drawn here because only the
+// renderer has fonts and a canvas; the main process just applies the PNG. Hidden when there is only the default profile.
+function profileBadgeDataUrl(p) {
+  const S = 64; const canvas = document.createElement('canvas'); canvas.width = canvas.height = S;
+  const g = canvas.getContext('2d');
+  const squircle = (inset, r) => { const a = inset, b = S - inset; g.beginPath(); g.roundRect(a, a, b - a, b - a, r); };
+  const color = pmColor(p.color); const ink = pmInk(p.color);
+  squircle(2, 20); g.fillStyle = 'rgba(12,14,22,.92)'; g.fill();          // dark outer edge keeps it visible on any taskbar
+  squircle(6, 16); g.fillStyle = '#ffffff'; g.fill();                       // light ring
+  squircle(10, 12);
+  const grad = g.createLinearGradient(10, 10, S - 10, S - 10);
+  grad.addColorStop(0, color); grad.addColorStop(1, color);
+  g.fillStyle = grad; g.fill();
+  g.save(); squircle(10, 12); g.clip();                                      // soft highlight across the top, a Drift-style sheen
+  const sheen = g.createLinearGradient(0, 10, 0, 34); sheen.addColorStop(0, 'rgba(255,255,255,.35)'); sheen.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = sheen; g.fillRect(10, 10, S - 20, 24); g.restore();
+  g.fillStyle = ink; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+  g.font = '800 30px "Segoe UI", system-ui, sans-serif';
+  const cap = g.measureText('H').actualBoundingBoxAscent; // centre the capital by its real height, not the font's line box
+  g.fillText(pmInitial(p.name), S / 2, S / 2 + cap / 2);
+  return canvas.toDataURL('image/png');
+}
+function syncTaskbarBadge(p) {
+  if (!window.drift || drift.platform !== 'win32') return;
+  const show = (p.count || 1) > 1 || p.isDefault === false;
+  try { drift.manage('profile:badge', show ? profileBadgeDataUrl(p) : '', show ? `Profile: ${p.name}` : ''); } catch { /* the badge is cosmetic */ }
 }
 
 // ---- Data ------------------------------------------------------------------------------
@@ -84,29 +119,35 @@ document.body.appendChild(pmRoot);
 
 function pmStatus(p) {
   if (p.id === PM.activeId || p.id === pmCurrent().id) return 'This window';
-  return p.running ? 'Open in another window' : '';
+  return p.running ? 'Open in another window' : 'Click to open';
 }
+function pmState(p) { return (p.id === PM.activeId || p.id === pmCurrent().id) ? 'here' : p.running ? 'open' : 'idle'; }
 function renderProfileMenu() {
-  const focusId = pmRoot.contains(document.activeElement) ? (document.activeElement.dataset.profileId || '') : '';
+  const focusId = pmRoot.contains(document.activeElement) ? (document.activeElement.dataset.profileId || document.activeElement.dataset.profileAction || '') : '';
   const cur = pmCurrent();
   const list = PM.list || [{ id: cur.id, name: cur.name, color: cur.color }];
   const activeId = PM.activeId || cur.id;
   const full = list.length >= PM.max;
+  pmRoot.style.setProperty('--pc', pmColor(cur.color));
   pmRoot.innerHTML = `
-    <div class="pm-current">${pmAvatar(cur, 'lg')}<div class="pm-current-text"><small>Browsing as</small><strong>${escapeHtml(cur.name)}</strong></div></div>
-    <div class="dm-sep" role="separator"></div>
-    <div class="dm-head">Switch profile</div>
+    <div class="pm-current">
+      ${pmAvatar(cur, 'lg')}
+      <div class="pm-current-text"><small>Browsing as</small><strong title="${escapeHtml(cur.name)}">${escapeHtml(cur.name)}</strong></div>
+      <button type="button" class="dm-row pm-edit" role="menuitem" data-profile-action="edit" data-profile-id="${escapeHtml(activeId)}" title="Edit this profile" aria-label="Edit profile ${escapeHtml(cur.name)}">${pmIcon('pen')}</button>
+    </div>
+    <div class="pm-head"><span>Switch profile</span><span class="pm-count">${list.length}/${PM.max}</span></div>
     <div class="pm-list" role="group" aria-label="Profiles">${list.map((p) => `
       <button type="button" class="dm-row pm-row${p.id === activeId ? ' current' : ''}" role="menuitemradio" aria-checked="${p.id === activeId}" data-profile-action="open" data-profile-id="${escapeHtml(p.id)}">
-        ${pmAvatar(p)}
-        <span class="dm-text"><span class="dm-label">${escapeHtml(p.name)}</span>${pmStatus(p) ? `<small>${pmStatus(p)}</small>` : ''}</span>
-        ${p.id === activeId ? `<span class="pm-check">${pmIcon('check')}</span>` : ''}
+        <span class="pm-av">${pmAvatar(p)}<i class="pm-dot ${pmState(p)}" aria-hidden="true"></i></span>
+        <span class="dm-text"><span class="dm-label">${escapeHtml(p.name)}</span><small>${pmStatus(p)}</small></span>
+        ${p.id === activeId ? `<span class="pm-check">${pmIcon('check')}</span>` : `<span class="pm-go">${pmIcon('arrowRight')}</span>`}
       </button>`).join('')}
     </div>
-    <div class="dm-sep" role="separator"></div>
-    <button type="button" class="dm-row" role="menuitem" data-profile-action="add" ${full ? 'disabled' : ''}><span class="dm-ico">${pmIcon('plus')}</span><span class="dm-text"><span class="dm-label">Add profile</span>${full ? `<small>Limit of ${PM.max} reached</small>` : ''}</span></button>
-    <button type="button" class="dm-row" role="menuitem" data-profile-action="manage"><span class="dm-ico">${pmIcon('gear')}</span><span class="dm-text"><span class="dm-label">Manage profiles</span></span></button>`;
-  if (focusId) pmRoot.querySelector(`[data-profile-id="${CSS.escape(focusId)}"]`)?.focus();
+    <div class="pm-foot">
+      <button type="button" class="dm-row pm-foot-btn" role="menuitem" data-profile-action="add" ${full ? `disabled title="Limit of ${PM.max} profiles reached"` : ''}><span class="dm-ico">${pmIcon('userPlus')}</span><span class="dm-label">Add profile</span></button>
+      <button type="button" class="dm-row pm-foot-btn" role="menuitem" data-profile-action="manage"><span class="dm-ico">${pmIcon('gear')}</span><span class="dm-label">Manage</span></button>
+    </div>`;
+  if (focusId) (pmRoot.querySelector(`[data-profile-id="${CSS.escape(focusId)}"]`) || pmRoot.querySelector(`[data-profile-action="${CSS.escape(focusId)}"]`))?.focus();
 }
 function positionProfileMenu() {
   const btn = $('profile-btn').getBoundingClientRect();
@@ -169,7 +210,7 @@ function renderProfileSwatches() {
 }
 function renderProfilePreview() {
   const preview = $('profile-preview');
-  preview.textContent = pmInitial($('profile-name').value);
+  pmSetLetter(preview, $('profile-name').value);
   preview.style.setProperty('--pc', pmColor(PM.dialog.color));
   preview.style.setProperty('--pi', pmInk(PM.dialog.color));
 }
@@ -265,34 +306,50 @@ document.addEventListener('click', (event) => {
 });
 
 // ---- Settings > Profiles ---------------------------------------------------------------------
-function profileItemMarkup(p) {
+function profileCardMarkup(p) {
   const isCurrent = p.id === PM.activeId;
-  const status = isCurrent ? 'Browsing now in this window' : p.running ? 'Open in another window' : p.isDefault ? 'Default profile' : 'Not open';
+  const status = isCurrent ? 'active' : p.running ? 'open' : 'idle';
+  const statusText = isCurrent ? 'Browsing in this window' : p.running ? 'Open in another window' : 'Not open';
   const deleteBlocked = isCurrent ? 'You are using this profile' : p.running ? 'Close its window first' : '';
-  return `<div class="profile-item${isCurrent ? ' current' : ''}">
-    ${pmAvatar(p, 'lg')}
-    <div class="profile-meta"><strong>${escapeHtml(p.name)}</strong><small>${status}</small></div>
-    <div class="profile-actions">
-      ${isCurrent ? '<span class="profile-chip">This window</span>' : `<button type="button" class="small-action" data-profile-action="open" data-profile-id="${escapeHtml(p.id)}">Open</button>`}
-      <button type="button" class="small-action" data-profile-action="edit" data-profile-id="${escapeHtml(p.id)}">Edit</button>
-      ${p.isDefault ? '' : `<button type="button" class="small-action remove-action" data-profile-action="delete" data-profile-id="${escapeHtml(p.id)}" ${deleteBlocked ? `disabled title="${deleteBlocked}"` : ''}>Delete</button>`}
+  const e = escapeHtml(p.id);
+  return `<article class="profile-card${isCurrent ? ' current' : ''}" style="--pc:${pmColor(p.color)}">
+    <div class="profile-card-top">
+      ${pmAvatar(p, 'xl')}
+      <div class="profile-card-id">
+        <strong title="${escapeHtml(p.name)}">${escapeHtml(p.name)}</strong>
+        <span class="profile-status ${status}"><i aria-hidden="true"></i>${statusText}</span>
+      </div>
+      ${p.isDefault ? '<span class="profile-chip">Default</span>' : ''}
     </div>
-  </div>`;
+    <div class="profile-card-actions">
+      ${isCurrent ? '<span class="profile-chip current-chip">This window</span>' : `<button type="button" class="small-action primary-action" data-profile-action="open" data-profile-id="${e}">Open</button>`}
+      <button type="button" class="small-action" data-profile-action="edit" data-profile-id="${e}">Edit</button>
+      ${p.isDefault ? '' : `<button type="button" class="small-action remove-action" data-profile-action="delete" data-profile-id="${e}" ${deleteBlocked ? `disabled title="${deleteBlocked}"` : ''}>Delete</button>`}
+    </div>
+  </article>`;
 }
 function profilesSettingsCards() {
   const list = PM.list;
+  const cur = pmCurrent();
   const full = !!list && list.length >= PM.max;
-  const body = !list
+  const hero = `<div class="profile-hero" style="--pc:${pmColor(cur.color)}">
+      ${pmAvatar(cur, 'xxl')}
+      <div class="profile-hero-text"><small>You are browsing as</small><strong>${escapeHtml(cur.name)}</strong><span>Everything you do in this window is saved only to this profile.</span></div>
+      <button type="button" class="small-action" data-profile-action="edit" data-profile-id="${escapeHtml(PM.activeId || cur.id)}">Edit profile</button>
+    </div>`;
+  const grid = !list
     ? '<p class="profile-loading">Loading profiles…</p>'
-    : `<div class="profile-list">${list.map(profileItemMarkup).join('')}</div>
-       <div class="profile-add-row"><button type="button" class="small-action primary-action" data-profile-action="add" ${full ? 'disabled' : ''}>Add profile</button><small>${list.length} of ${PM.max} profiles</small></div>`;
+    : `<div class="profile-grid">${list.map(profileCardMarkup).join('')}
+        <button type="button" class="profile-card profile-add-card" data-profile-action="add" ${full ? 'disabled' : ''}>
+          <span class="profile-add-plus">${pmIcon('plus')}</span><strong>Add profile</strong><small>${full ? `Limit of ${PM.max} reached` : `${list.length} of ${PM.max} used`}</small>
+        </button></div>`;
+  const kept = [['Sign-ins & cookies', 'user'], ['Bookmarks', 'star'], ['History', 'history'], ['Settings & theme', 'gear'], ['Extensions', 'puzzle'], ['Open tabs & session', 'tab']]
+    .map(([label, icon]) => `<li><span class="profile-kept-ico">${pmIcon(icon)}</span>${label}</li>`).join('');
   return [
-    ['Your profiles', 'Each profile opens in its own window with its own sign-ins, cookies, bookmarks, history, settings and extensions.', body, 'profiles-card'],
-    ['How profiles work', '', `<ul class="profile-notes">
-      <li>Signing in to a website in one profile never signs you in anywhere else. Clearing browsing data only affects the profile you clear it in.</li>
-      <li>Opening a profile that is already open brings its window to the front.</li>
-      <li>Starting Drift normally opens the profile you used last. The window title shows the profile’s name once you have more than one.</li>
-      <li>Deleting a profile erases its data from this computer. Updates and Drift’s review reminders are shared by all profiles.</li>
-    </ul>`, 'profiles-card']
+    ['This profile', '', hero, 'profiles-card profiles-plain'],
+    ['All profiles', 'Each profile opens in its own window. Opening one that is already open brings it to the front.', grid, 'profiles-card profiles-plain'],
+    ['Kept separate for every profile', 'Nothing below is shared between profiles. Updates and review reminders are the only shared parts.',
+      `<ul class="profile-kept">${kept}</ul>
+       <p class="profile-note">Deleting a profile permanently erases its data from this computer. Files you downloaded are kept. Drift opens the profile you used last when it starts.</p>`, 'profiles-card']
   ];
 }
