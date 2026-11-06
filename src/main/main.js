@@ -18,6 +18,7 @@ const { normalizeAppearanceOptions } = require('./appearance-settings');
 const { createRecentlyClosedStore } = require('./recently-closed');
 const { normalizeBookmarkUrl, normalizeFavicon, reorderBookmarkList, moveBookmarkBy } = require('./bookmark-utils');
 const { evaluatePopup } = require('./protection');
+const googleCompat = require('./google-compat');
 
 // Project layout: src/main (this file), src/preload, src/renderer/*, build/ (icons).
 const ROOT_DIR = path.join(__dirname, '..', '..');
@@ -624,8 +625,103 @@ function handleDownloadAction(id, action) {
 }
 
 // ---------------------------------------------------------------- tabs
+// Web pages always run with JavaScript on and context isolation on: Google's sign-in refuses browsers without them.
+const pageWebPreferences = () => ({ preload: PAGE_PRELOAD_PATH, sandbox: true, contextIsolation: true, javascript: true, webSecurity: true, backgroundThrottling: true, spellcheck: false, enableWebSQL: false });
+
+// ---------------------------------------------------------------- Google sign-in compatibility (see google-compat.js)
+// Popup windows (window.open with features) stay attached to the page that opened them so OAuth / "Sign in with
+// Google" can hand the result back through window.opener. popupOwners keeps the opener tab awake meanwhile.
+const popupOwners = new Map(); // opener webContents id -> number of open popups
+const popupWindows = new Set();
+const signinFallbackTabs = new Set(); // webContents ids currently using the Firefox sign-in fallback
+const signinFallbackTried = new Set(); // webContents ids that already retried once (no retry loops)
+
+function popupWindowOptions(details) {
+  const parentBounds = winAlive() ? win.getBounds() : null;
+  return {
+    ...googleCompat.popupBounds(details?.features, parentBounds),
+    show: true,
+    parent: winAlive() ? win : undefined, // closes with Drift and stays in front of the page that asked for it
+    autoHideMenuBar: true,
+    backgroundColor: '#ffffff',
+    icon: fs.existsSync(BASE_ICON_ICO) ? BASE_ICON_ICO : undefined,
+    webPreferences: pageWebPreferences()
+  };
+}
+
+function handlePageWindowOpen(wc, details, initiatorUrl) {
+  const decision = evaluatePopup(details, {
+    now: Date.now(), lastGestureAt: trustedInputAt.get(wc.id) || 0, gestureWindowMs: 3000,
+    adBlockEnabled, popupBlockEnabled,
+    initiatorHost: hostnameOf(initiatorUrl),
+    isSiteAllowed: (host) => isSiteAllowed(host) || googleCompat.isGoogleSigninHost(host),
+    blockedDomainFor
+  });
+  if (decision.block) {
+    blockedPopupsCount += 1;
+    blockedCount += 1;
+    const host = decision.blockedHost || decision.host;
+    if (host) blockedHostCounts[host] = (blockedHostCounts[host] || 0) + 1;
+    pushBlockedSoon();
+    return { action: 'deny' };
+  }
+  if (googleCompat.shouldOpenAsPopupWindow(details)) {
+    return { action: 'allow', outlivesOpener: false, overrideBrowserWindowOptions: popupWindowOptions(details) };
+  }
+  createTab(details.url);
+  return { action: 'deny' };
+}
+
+function setupPopupWindow(openerWc, child) {
+  if (!child || child.isDestroyed()) return;
+  const openerId = openerWc.id;
+  const cwc = child.webContents;
+  popupWindows.add(child);
+  popupOwners.set(openerId, (popupOwners.get(openerId) || 0) + 1);
+  try { child.removeMenu(); } catch { /* older Electron: autoHideMenuBar already hides it */ }
+  cwc.on('before-input-event', (_event, input) => {
+    if (['keyDown', 'rawKeyDown'].includes(input?.type)) trustedInputAt.set(cwc.id, Date.now());
+  });
+  cwc.setWindowOpenHandler((details) => handlePageWindowOpen(cwc, details, cwc.getURL()));
+  cwc.on('did-create-window', (grandChild) => setupPopupWindow(cwc, grandChild));
+  installGoogleSigninFallback(cwc);
+  child.once('closed', () => {
+    popupWindows.delete(child);
+    const left = (popupOwners.get(openerId) || 1) - 1;
+    if (left > 0) popupOwners.set(openerId, left); else popupOwners.delete(openerId);
+    trustedInputAt.delete(cwc.id);
+  });
+}
+
+// If Google still answers "This browser or app may not be secure", retry the sign-in once with a Firefox user agent.
+// The override is per tab, applies only while the tab is on Google's accounts pages, and is removed as soon as it
+// leaves them, so every other site keeps seeing Drift's normal Chrome user agent.
+function installGoogleSigninFallback(wc) {
+  const id = wc.id;
+  const chromeUa = () => session.defaultSession.getUserAgent();
+  wc.on('did-navigate', (_event, url) => {
+    if (signinFallbackTabs.has(id) && !googleCompat.isGoogleAccountsPage(url)) {
+      signinFallbackTabs.delete(id);
+      try { wc.setUserAgent(chromeUa()); } catch { /* tab closing */ }
+      return;
+    }
+    if (!googleCompat.isGoogleRejectionUrl(url) || signinFallbackTried.has(id)) return;
+    signinFallbackTried.add(id);
+    signinFallbackTabs.add(id);
+    startupLog('Google rejected the sign-in browser check; retrying this tab with the Firefox sign-in fallback');
+    let retryUrl = 'https://accounts.google.com/ServiceLogin';
+    try {
+      const continueUrl = new URL(url).searchParams.get('continue');
+      if (continueUrl && /^https:\/\//i.test(continueUrl)) retryUrl = `https://accounts.google.com/ServiceLogin?continue=${encodeURIComponent(continueUrl)}`;
+    } catch { /* keep the plain sign-in page */ }
+    try { wc.setUserAgent(googleCompat.firefoxUserAgent()); } catch { return; }
+    safelyLoad(wc, retryUrl);
+  });
+  wc.once('destroyed', () => { signinFallbackTabs.delete(id); signinFallbackTried.delete(id); });
+}
+
 function attachView(tab) {
-  const view = new WebContentsView({ webPreferences: { preload: PAGE_PRELOAD_PATH, sandbox: true, contextIsolation: true, backgroundThrottling: true, spellcheck: false, enableWebSQL: false } });
+  const view = new WebContentsView({ webPreferences: pageWebPreferences() });
   tab.view = view;
   view.setBackgroundColor('#ffffff');
   win.contentView.addChildView(view);
@@ -649,25 +745,9 @@ function attachView(tab) {
   for (const eventName of ['dom-ready', 'did-finish-load', 'did-stop-loading']) wc.on(eventName, () => reclaimAddressFocus(tab));
   // A real click inside the page means the person chose to use it: stop pulling focus back to the address bar.
   wc.on('before-mouse-event', (_event, mouse) => { if (mouse?.type === 'mouseDown' && tab === addressFocusTab) addressFocusUntil = 0; });
-  wc.setWindowOpenHandler((details) => {
-    const decision = evaluatePopup(details, {
-      now: Date.now(), lastGestureAt: trustedInputAt.get(wc.id) || 0, gestureWindowMs: 3000,
-      adBlockEnabled, popupBlockEnabled,
-      initiatorHost: hostnameOf(liveUrl(tab) || tab.url),
-      isSiteAllowed: isSiteAllowed,
-      blockedDomainFor
-    });
-    if (decision.block) {
-      blockedPopupsCount += 1;
-      blockedCount += 1;
-      const host = decision.blockedHost || decision.host;
-      if (host) blockedHostCounts[host] = (blockedHostCounts[host] || 0) + 1;
-      pushBlockedSoon();
-      return { action: 'deny' };
-    }
-    createTab(details.url);
-    return { action: 'deny' };
-  });
+  wc.setWindowOpenHandler((details) => handlePageWindowOpen(wc, details, liveUrl(tab) || tab.url));
+  wc.on('did-create-window', (child) => setupPopupWindow(wc, child));
+  installGoogleSigninFallback(wc);
   wc.on('found-in-page', (_event, result) => {
     findState.activeMatchOrdinal = result.activeMatchOrdinal || 0;
     findState.matches = result.matches || 0;
@@ -1200,7 +1280,7 @@ function discardIdleTabs() {
         lastActive: t.lastActive,
         visible: s === cur && t === cur.active,
         audible: wc.isCurrentlyAudible(),
-        busy: downloadOwners.has(wc.id) || (wc.isBeingCaptured?.() ?? false) || wc.isDevToolsOpened(),
+        busy: downloadOwners.has(wc.id) || popupOwners.has(wc.id) || (wc.isBeingCaptured?.() ?? false) || wc.isDevToolsOpened(),
         loading: !!t.loading,
         frozen: !!t.frozen,
         isNewTab: isNewTabUrl(liveUrl(t)),
@@ -2014,16 +2094,18 @@ function setupSession() {
       persistDownloads(true); push();
     });
   });
-  // Remove the Electron product token, leaving Chromium's platform UA intact.
-  ses.setUserAgent(ses.getUserAgent().replace(/\sElectron\/\S+/, '').replace(/\sdrift\/\S+/i, ''));
-  ses.setPermissionRequestHandler((_wc, permission, cb) => cb(['fullscreen', 'clipboard-sanitized-write', 'pointerLock'].includes(permission)));
+  // Present a clean, current Chrome user agent (no Electron/Drift tokens, reduced MAJOR.0.0.0 version like real
+  // Chrome). Google blocks sign-in from browsers it identifies as embedded/unsupported.
+  ses.setUserAgent(googleCompat.chromeUserAgent(ses.getUserAgent(), process.versions.chrome));
+  const grantedPermissions = new Set(['fullscreen', 'clipboard-sanitized-write', 'pointerLock', ...googleCompat.SIGNIN_PERMISSIONS]);
+  ses.setPermissionRequestHandler((_wc, permission, cb) => cb(grantedPermissions.has(permission)));
   ses.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
     if (!adBlockEnabled || details.resourceType === 'mainFrame') return callback({});
     const blockedHost = blockedDomainFor(requestHost(details.url));
     if (!blockedHost) return callback({});
-    // Only blocked requests pay for the allow-list check.
+    // Only blocked requests pay for the allow-list check. Google's sign-in pages are always allowed.
     const initiatorHost = hostnameOf(details.initiator || details.referrer || '');
-    if (initiatorHost && isSiteAllowed(initiatorHost)) return callback({});
+    if (initiatorHost && (isSiteAllowed(initiatorHost) || googleCompat.isGoogleSigninHost(initiatorHost))) return callback({});
     blockedCount += 1;
     blockedHostCounts[blockedHost] = (blockedHostCounts[blockedHost] || 0) + 1;
     pushBlockedSoon();
@@ -2476,6 +2558,9 @@ process.on('uncaughtException', (error) => {
 //  - process-per-site: tabs on the same site share one renderer instead of one renderer each.
 app.commandLine.appendSwitch('disable-features', 'Translate,MediaRouter,OptimizationHints,AutofillServerCommunication,SpareRendererForSitePerProcess,BackForwardCache,Prerender2,InterestFeedContentSuggestions');
 app.commandLine.appendSwitch('process-per-site');
+// Workers, service workers and any session that is not the default one fall back to this user agent; keep it the same
+// clean Chrome UA as the tabs so Google never sees an Electron token from a background request.
+app.userAgentFallback = googleCompat.chromeUserAgent(app.userAgentFallback, process.versions.chrome);
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();

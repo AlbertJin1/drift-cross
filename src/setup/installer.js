@@ -331,8 +331,8 @@ const removeDirRetry = async (directory, attempts = 24) => {
   }
   throw lastError || new Error(`Could not remove ${directory}.`);
 };
-// Ends every Drift process that still runs from the install folder (main process, GPU/renderer/utility children, the
-// VPN helper). A browser that "closed" but left processes behind used to keep the update waiting and the folder locked.
+// Ends every Drift process that still runs from the install folder (main process and its GPU/renderer/utility
+// children). A browser that "closed" but left processes behind used to keep the update waiting and the folder locked.
 async function forceCloseInstalledDrift(dir, log) {
   const ok = await killInstalled(dir);
   log(ok ? 'no Drift process is left running from the install folder' : 'some Drift processes could not be closed');
